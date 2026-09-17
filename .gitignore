@@ -1,0 +1,48 @@
+# --- Secrets ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- IPinfo-/GeoIP-Datenbanken (werden per Token geladen) --------------------
+*.mmdb
+
+# --- Datenbank-Dumps und Backups --------------------------------------------
+*.sql
+*.sql.gz
+*.dump
+*.pgdump
+*.backup
+dumps/
+backups/
+
+# --- Honeypot-Rohdaten (Klartext-IPs, Angreifer-Eingaben, Malware) ----------
+cowrie.json*
+*.log
+tty/
+downloads/
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Frontend ----------------------------------------------------------------
+node_modules/
+
+# --- Editor / OS -------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+
+# --- Claude Code (lokal) -----------------------------------------------------
+.claude/worktrees/
+.claude/settings.local.json
