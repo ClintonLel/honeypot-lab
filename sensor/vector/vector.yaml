@@ -93,10 +93,11 @@ sinks:
       timeout_secs: 30
       concurrency: 1
     # Bei einem Ausfall des Hauptservers sammelt Vector auf der Platte, statt
-    # Ereignisse zu verlieren.
+    # Ereignisse zu verlieren. Vector verlangt mindestens 268435488 Bytes,
+    # also 256 MiB plus etwas Verwaltung; hier sind es 512 MiB.
     buffer:
       type: disk
-      max_size: 268435456
+      max_size: 536870912
       when_full: block
     # Der Healthcheck würde /ingest ohne POST aufrufen und scheitern.
     healthcheck:

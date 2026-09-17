@@ -20,6 +20,10 @@ COMPOSE = SENSOR / "docker-compose.yml"
 API_MAX_EVENTS = 500
 CADDY_MAX_BODY = 1024 * 1024
 
+# Kleinster Plattenpuffer, den Vector annimmt: 256 MiB plus Verwaltung.
+# Darunter startet der Dienst mit Exit-Code 78 nicht.
+MIN_DISK_BUFFER = 268435488
+
 
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
@@ -100,7 +104,7 @@ def test_an_outage_is_buffered_on_disk(config):
     buffer = config["sinks"]["lab_api"]["buffer"]
     assert buffer["type"] == "disk"
     assert buffer["when_full"] == "block"
-    assert buffer["max_size"] >= 64 * 1024 * 1024
+    assert buffer["max_size"] >= MIN_DISK_BUFFER
 
 
 def test_failed_requests_are_retried(config):
