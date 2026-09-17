@@ -1,6 +1,7 @@
 # Honeypot-Lab: Dienste auf dem Sensor
 #
-# Schritt 2.2: cowrie-a (klassische Shell). cowrie-b und Vector folgen später.
+# Schritt 2.2: cowrie-a (klassische Shell), Schritt 4.2: vector.
+# cowrie-b folgt in Phase 7.
 # Vorbereitung und Befehle: sensor/README.md
 
 name: honeypot
@@ -41,3 +42,45 @@ services:
       - /srv/honeypot/persona/fs.pickle:/cowrie/fs.pickle:ro
       - /srv/honeypot/hostkeys:/cowrie/hostkeys:ro
       - /srv/honeypot/a/var:/cowrie/cowrie-git/var
+
+  # Liest die Cowrie-Logs und liefert sie an die Lab-API (E-005, Schritt 4.2).
+  # Keine eingehende Verbindung, kein Port, nur ausgehend nach
+  # https://api.tomkaufmann.dev/ingest (E-007).
+  vector:
+    image: timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773
+    container_name: vector
+    # Dieselbe ID wie Cowrie, sonst kommt Vector nicht an die Logs: Die
+    # Verzeichnisse unter /srv/honeypot sind 0700 und gehören 999:999.
+    user: "999:999"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    pids_limit: 128
+    cpus: 0.5
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    # Das Ingest-Token steht nur hier, nie im Repo und nie in der Konfiguration.
+    env_file:
+      - /srv/honeypot/.env
+    environment:
+      VECTOR_CONFIG: /etc/vector/vector.yaml
+      # Begrenzt, wie oft Vector dieselbe eigene Meldung wiederholt. Ohne das
+      # füllt eine hängende Verbindung das Containerlog.
+      VECTOR_INTERNAL_LOG_RATE_LIMIT: "10"
+    volumes:
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+      # Nur die Logs, lesend. Host-Keys und fs.pickle sieht Vector nicht.
+      - /srv/honeypot/a/var/log/cowrie:/srv/honeypot/a/var/log/cowrie:ro
+      # Positionsmerker und Plattenpuffer.
+      - /srv/honeypot/vector:/var/lib/vector
+    depends_on:
+      - cowrie-a

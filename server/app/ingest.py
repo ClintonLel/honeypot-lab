@@ -13,12 +13,13 @@ verwerfen, speichern (E-009).
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 from hashlib import sha256
 from collections import Counter
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -62,13 +63,52 @@ async def db_session(request: Request) -> Any:
             raise
 
 
-def events_from(body: Any) -> list[Any]:
-    """Nimmt eine Liste oder ein Objekt mit ``events`` entgegen."""
-    if isinstance(body, list):
-        return body
-    if isinstance(body, dict) and isinstance(body.get("events"), list):
-        return body["events"]
-    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Liste erwartet")
+# Obergrenze für den Rumpf. Caddy begrenzt ihn schon auf 1 MB (E-021); das
+# hier ist die zweite Bremse, falls jemand an Caddy vorbeikommt.
+MAX_BODY_BYTES = 2 * 1024 * 1024
+
+
+def parse_batch(body: bytes) -> list[Any]:
+    """Liest einen Stapel als JSON-Array, als Objekt mit ``events`` oder als NDJSON.
+
+    Vector kann Stapel je nach Einstellung als Array oder als eine Zeile je
+    Ereignis schicken. Beides anzunehmen kostet nichts und erspart einen
+    Ausfall, falls sich die Einstellung auf dem Sensor einmal ändert.
+    """
+    text = body.strip()
+    if not text:
+        return []
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        if isinstance(parsed.get("events"), list):
+            return parsed["events"]
+        # Ein einzelnes Objekt ist ein Stapel mit einem Ereignis. In ruhigen
+        # Minuten schickt Vector genau das.
+        return [parsed]
+    if parsed is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Liste erwartet"
+        )
+
+    events: list[Any] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="kein gültiges JSON"
+            ) from None
+    return events
 
 
 async def upsert_session(
@@ -170,10 +210,12 @@ async def add_command(db: AsyncSession, event: NormalizedEvent, session_id: int)
 @router.post("/ingest", dependencies=[Depends(require_sensor_token)])
 async def ingest(
     request: Request,
-    body: Any = Body(...),
     db: AsyncSession = Depends(db_session),
 ) -> dict[str, Any]:
-    raw_events = events_from(body)
+    body = await request.body()
+    if len(body) > MAX_BODY_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Rumpf zu groß")
+    raw_events = parse_batch(body)
     if len(raw_events) > MAX_BATCH:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,

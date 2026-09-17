@@ -102,10 +102,14 @@ def test_userdb_accounts_exist_in_persona():
 
 
 def test_image_is_pinned_by_tag_and_digest():
+    """Tag mit Versionsnummer und Digest, kein :latest (E-010).
+
+    Der Tag darf einen Zusatz tragen, etwa ``0.58.0-alpine``.
+    """
     images = re.findall(r"^\s*image:\s*(\S+)\s*$", read(SENSOR / "docker-compose.yml"), flags=re.M)
     assert images
     for image in images:
-        assert re.fullmatch(r"[\w./-]+:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", image), image
+        assert re.fullmatch(r"[\w./-]+:\d+\.\d+\.\d+(-[\w.]+)?@sha256:[0-9a-f]{64}", image), image
 
 
 def test_debian_base_image_is_pinned():

@@ -110,9 +110,35 @@ def test_a_batch_that_is_too_large_is_refused(client, cowrie_events):
     assert send(client, too_many).status_code == 413
 
 
-def test_something_that_is_not_a_list_is_refused(client):
-    response = client.post("/ingest", json={"kein": "stapel"}, headers={"Authorization": f"Bearer {TOKEN}"})
+def test_something_that_is_not_json_is_refused(client):
+    response = client.post(
+        "/ingest",
+        content=b"kein json",
+        headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+    )
     assert response.status_code == 422
+
+
+def test_a_single_object_is_taken_as_one_event(client, cowrie_events, migrated):
+    """Ein Stapel mit einem Ereignis kommt ohne Klammern an."""
+    body = send(client, [cowrie_events[0]]).json()
+    assert body["accepted"] == 1
+    again = client.post(
+        "/ingest", json=cowrie_events[1], headers={"Authorization": f"Bearer {TOKEN}"}
+    ).json()
+    assert again["accepted"] == 1
+
+
+def test_one_line_per_event_also_works(client, cowrie_events):
+    """Falls Vector die Stapel als NDJSON schickt statt als Array."""
+    lines = "\n".join(json.dumps(event) for event in cowrie_events[:5])
+    response = client.post(
+        "/ingest",
+        content=lines.encode("utf-8"),
+        headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/x-ndjson"},
+    )
+    assert response.status_code == 200
+    assert response.json()["accepted"] == 5
 
 
 # --- Abgeleitete Sitzungen --------------------------------------------------

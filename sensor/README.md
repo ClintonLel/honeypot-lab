@@ -61,6 +61,72 @@ ssh hp-sensor 'sudo install -d -m 0755 /opt/honeypot-lab/sensor'
 rsync -rlptv --delete --exclude __pycache__ --rsync-path="sudo rsync" sensor/ hp-sensor:/opt/honeypot-lab/sensor/
 ```
 
+## Vector einrichten (Schritt 4.2)
+
+Vector liest die Cowrie-Logs und liefert sie an `https://api.tomkaufmann.dev/ingest`.
+Er läuft mit derselben ID wie Cowrie (999), sieht nur die Logs und nur lesend,
+und veröffentlicht keinen Port.
+
+**1. Token auf den Sensor bringen.** Es ist dasselbe wie auf dem Hauptserver.
+Dort auslesen (der Wert gehört in keine Chat-Nachricht und in kein Repo):
+
+```bash
+ssh globe 'sudo grep ^INGEST_TOKEN= /opt/honeypot-lab/.env'
+```
+
+Auf dem Sensor eintragen, Rechte 600, Eigentümer root:
+
+```bash
+ssh -t hp-sensor 'sudo sh -c "umask 077; cat > /srv/honeypot/.env" && sudo chown root:root /srv/honeypot/.env && sudo chmod 600 /srv/honeypot/.env && sudo ls -l /srv/honeypot/.env'
+```
+
+Der Befehl wartet auf die Eingabe: Zeile `INGEST_TOKEN=‹Wert›` einfügen, dann
+Strg-D. Danach zeigt er die Rechte an.
+
+**2. Verzeichnis für Vector anlegen** (legt `prepare-host.sh` mit an, der
+Aufruf ist gefahrlos wiederholbar):
+
+```bash
+ssh hp-sensor 'sudo /opt/honeypot-lab/sensor/scripts/prepare-host.sh'
+```
+
+**3. Starten:**
+
+```bash
+ssh hp-sensor 'cd /opt/honeypot-lab/sensor && sudo docker compose up -d vector && sudo docker compose ps'
+```
+
+**4. Nachsehen, ob er liefert:**
+
+```bash
+ssh hp-sensor 'sudo docker compose -f /opt/honeypot-lab/sensor/docker-compose.yml logs --tail 30 vector'
+```
+
+Erwartet werden Zeilen über die geöffnete Datei und keine Fehler mit `401`
+(falsches Token) oder `422` (Format).
+
+Auf dem Hauptserver muss die Zahl der Ereignisse wachsen:
+
+```bash
+ssh globe 'cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml exec -T db psql -U honeypot -d honeypot -c "SELECT count(*) AS ereignisse, count(DISTINCT cowrie_session) AS sitzungen FROM events;"'
+```
+
+## Test: Rotation und Neustart (Schritt 4.2)
+
+Cowrie rotiert `cowrie.json` täglich. Erkennt Vector die Datei am Namen statt
+am Inhalt, entstehen dabei Lücken; ohne gemerkte Position liest er nach einem
+Neustart alles noch einmal. `scripts/test-vector-rotation.sh` prüft beides in
+einem eigenen Verzeichnis unter `/tmp`, mit erfundenen Ereignissen und einer
+Datei als Ziel. Die echten Logs und die Datenbank bleiben unberührt.
+
+```bash
+ssh hp-sensor 'sudo /opt/honeypot-lab/sensor/scripts/test-vector-rotation.sh'
+```
+
+Der Test schreibt 10 Zeilen, rotiert die Datei, trägt 5 weitere Zeilen in die
+rotierte und 10 in die neue Datei nach und startet Vector mit demselben
+`data_dir` erneut. Erwartet: 25 Zeilen, jede genau einmal.
+
 ## Beispiel-Logs für die Tests erzeugen (Schritt 4.1)
 
 `scripts/make-fixtures.py` wählt vollständige Sitzungen aus `cowrie.json` aus

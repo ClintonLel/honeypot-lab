@@ -42,6 +42,7 @@ bei der Übernahme ausformuliert.
 | E-022 | Fester HMAC-Schlüssel statt monatlicher Rotation            | angenommen                                     |
 | E-023 | Grundgerüst von API, Schema und Worker                      | angenommen                                     |
 | E-024 | Ingest: Prüfung, Idempotenz und Umgang mit Adressen         | angenommen                                     |
+| E-025 | Vector auf dem Sensor: Quelle, Stapel und Puffer            | angenommen                                     |
 
 ---
 
@@ -1012,3 +1013,49 @@ konstant. Es gibt keine Rotation. E-009 gilt unverändert weiter.
   sie sich nach dem Start von Variante B nicht mehr (README).
 - Die Sitzungen unserer eigenen Tests sind an `127.0.0.1` erkennbar und werden
   in Schritt 7.1 ausgeschlossen.
+
+---
+
+## E-025: Vector auf dem Sensor: Quelle, Stapel und Puffer
+
+- Status: angenommen
+- Datum: 2026-09-18
+- Quelle: Schritt 4.2
+
+**Entscheidung:**
+
+- `timberio/vector:0.58.0-alpine`, Tag und Digest gepinnt. Der Container läuft
+  als 999:999 wie Cowrie, schreibgeschützt, ohne Capabilities und ohne Port.
+- Er sieht nur `/srv/honeypot/a/var/log/cowrie`, und das nur lesend. Host-Keys
+  und `fs.pickle` bleiben außen vor.
+- Das Ingest-Token kommt aus `/srv/honeypot/.env` (Rechte 600, root) und steht
+  als `${INGEST_TOKEN}` in der Konfiguration, nie im Klartext.
+- Die Datei wird am Inhalt erkannt (`fingerprint.strategy: checksum`), die
+  Position liegt in `/srv/honeypot/vector`.
+- Ein Stapel geht als JSON-Array raus, höchstens 250 Ereignisse und 512 KiB.
+- Fällt der Hauptserver aus, puffert Vector auf der Platte (256 MiB, `block`).
+
+**Begründung:**
+
+- Cowrie rotiert `cowrie.json` täglich. Am Dateinamen erkannt, verlöre Vector
+  die Zeilen, die nach dem Umbenennen noch in die alte Datei laufen. Am Inhalt
+  erkannt, liest er sie zu Ende.
+- Die gemerkte Position verhindert, dass ein Neustart alles noch einmal
+  schickt. Gegen den Rest hilft die Idempotenz der API (E-024) — beides
+  zusammen, weil eines allein jeweils nur die halbe Zusage ist.
+- 250 Ereignisse und 512 KiB liegen mit Abstand unter den Grenzen von API und
+  Caddy (500 Ereignisse, 1 MB).
+- `when_full: block` hält lieber Vector an, als Ereignisse zu verwerfen. Auf
+  dem Sensor liegen die Logs ohnehin 14 Tage.
+
+**Konsequenzen:**
+
+- `scripts/test-vector-rotation.sh` prüft Rotation und Neustart in einem
+  eigenen Verzeichnis, ohne die echten Daten anzufassen.
+- Die API nimmt neben dem Array auch NDJSON und ein einzelnes Objekt an, damit
+  eine geänderte Einstellung auf dem Sensor den Ingest nicht anhält.
+- Variante B bekommt in Phase 7 einen zweiten Pfad in `include` und einen
+  eigenen Mount.
+- Beim ersten Start liefert Vector den gesamten vorhandenen Bestand nach
+  (`read_from: beginning`), auch unsere eigenen Testsitzungen. Sie sind an
+  `127.0.0.1` erkennbar und werden in Schritt 7.1 ausgeschlossen.

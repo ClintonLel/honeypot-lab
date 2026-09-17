@@ -35,6 +35,11 @@ for variant in a b; do
   done
 done
 
+# Vector merkt sich hier, wie weit es die Logdateien gelesen hat, und puffert
+# bei einem Ausfall des Hauptservers auf die Platte (Schritt 4.2). Der
+# Container läuft mit derselben ID wie Cowrie und darf die Logs damit lesen.
+cowrie_dir 0700 "$ROOT/vector"
+
 # Gemeinsame Host-Keys, damit A und B vor dem Login gleich aussehen (E-002)
 cowrie_dir 0700 "$ROOT/hostkeys"
 for type in rsa ecdsa ed25519; do
