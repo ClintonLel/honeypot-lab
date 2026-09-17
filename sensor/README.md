@@ -45,18 +45,40 @@ Fehlt pytest, installierst du es einmal mit `python3 -m pip install pytest`.
 ## Auf den Sensor übertragen
 
 Übertragen wird per rsync vom Laptop. Auf dem Sensor liegen so keine
-Zugangsdaten zum Repo. `SENSOR_IP` ersetzt du durch die IP des Sensors.
+Zugangsdaten zum Repo. Der Sensor steht in `~/.ssh/config` als Host
+`hp-sensor` (195.201.127.108, User `tom`, Port 22022, Schlüssel `hp_sensor`).
+Mit der nackten IP greift dieser Block nicht, dann fehlen Port und Schlüssel.
 
 Einmalig den Zielordner anlegen:
 
 ```bash
-ssh -i ~/.ssh/hp_sensor -p 22022 tom@SENSOR_IP sudo install -d -m 0755 /opt/honeypot-lab/sensor
+ssh hp-sensor 'sudo install -d -m 0755 /opt/honeypot-lab/sensor'
 ```
 
 Übertragen, auch nach jeder Änderung:
 
 ```bash
-rsync -rlptv --delete --exclude __pycache__ --rsync-path="sudo rsync" -e "ssh -i ~/.ssh/hp_sensor -p 22022" sensor/ tom@SENSOR_IP:/opt/honeypot-lab/sensor/
+rsync -rlptv --delete --exclude __pycache__ --rsync-path="sudo rsync" sensor/ hp-sensor:/opt/honeypot-lab/sensor/
+```
+
+## Beispiel-Logs für die Tests erzeugen (Schritt 4.1)
+
+`scripts/make-fixtures.py` wählt vollständige Sitzungen aus `cowrie.json` aus
+und ersetzt dabei jede Adresse der Beteiligten durch eine aus dem
+Dokumentationsbereich. Die Zusammenfassung auf stderr enthält nur Zahlen.
+
+```bash
+ssh hp-sensor 'sudo python3 /opt/honeypot-lab/sensor/scripts/make-fixtures.py > /tmp/fixtures.jsonl'
+```
+
+```bash
+rsync -av hp-sensor:/tmp/fixtures.jsonl server/tests/fixtures/
+```
+
+Danach die Zwischendatei auf dem Sensor wieder löschen:
+
+```bash
+ssh hp-sensor 'rm -f /tmp/fixtures.jsonl'
 ```
 
 ## Einmalig vorbereiten
