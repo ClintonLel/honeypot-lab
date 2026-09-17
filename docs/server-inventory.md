@@ -4,8 +4,8 @@ Stand: 2026-09-17 (Schritte 3.1 und 3.2). Grundlage sind die Ausgabe der Befehle
 aus dem Bauplan auf dem Hauptserver, das Repo `ClintonLel/Website-Demo` (Stand
 `main`) und die öffentlichen DNS-Einträge. Freigegeben ist Variante A mit rsync
 (siehe „Freigabe“). Umgesetzt ist bisher nur die Anbindung an Caddy (Schritt
-3.2, Pull Request `ClintonLel/Website-Demo#13`); die Lab-Dienste selbst folgen
-in Schritt 3.3.
+3.2, Pull Request `ClintonLel/Website-Demo#13`, gemerged am 2026-09-17 als
+`af1a81b`); die Lab-Dienste selbst folgen in Schritt 3.3.
 
 ## Bestandsaufnahme
 
@@ -200,7 +200,7 @@ wichtig, denn Compose bricht ab, wenn ein als `external` markiertes Netz fehlt.
    die IP liefert, sonst scheitert Caddys Zertifikatsanfrage.
 2. **Netz auf dem Server anlegen**, einmalig und vor dem Merge:
    `docker network create lab_edge`.
-3. **Pull Request in Website-Demo** (Schritt 3.2, offen seit 2026-09-17:
+3. **Pull Request in Website-Demo** (Schritt 3.2, gemerged am 2026-09-17:
    `ClintonLel/Website-Demo#13`, Branch `lab-api`):
    - In `docker-compose.yml` bekommt `caddy` die Netze `default` und
      `lab_edge`. `default` muss ausdrücklich dastehen, sonst verliert Caddy die
@@ -405,6 +405,36 @@ Alle Befehle laufen auf dem Hauptserver, sofern nicht anders vermerkt.
    ```
 
    Erwartet: `globe-demo_default lab_edge`.
+
+### Ergebnis am 2026-09-17
+
+Der Rollout ist durch, Schritt 3.2 ist abgeschlossen.
+
+| Prüfung                         | Ergebnis                                                              |
+|---------------------------------|-----------------------------------------------------------------------|
+| Caddyfile des Branches          | `Valid configuration` (Caddy 2 im Wegwerf-Container)                  |
+| Netz `lab_edge`                 | vorhanden, Caddy hängt in `globe-demo_default` und `lab_edge`          |
+| Deploy nach dem Merge           | Workflow erfolgreich, Smoke-Test der Webseite grün                    |
+| `https://api.tomkaufmann.dev/`  | HTTP 502, `ssl_verify_result 0`                                       |
+| Zertifikat                      | `CN=api.tomkaufmann.dev`, Let's Encrypt, gültig bis 2026-12-16        |
+| `https://tomkaufmann.dev/`      | HTTP 200, unverändert                                                 |
+| CORS, erlaubte Herkunft         | Preflight von `https://tomkaufmann.dev` → 204 mit `Access-Control-Allow-Origin`, `-Methods`, `-Max-Age`, `Vary: Origin` |
+| CORS, fremde Herkunft           | kein `Access-Control-Allow-Origin`                                    |
+| HSTS                            | `max-age=31536000; includeSubDomains`                                 |
+
+Anmerkungen:
+
+- Das 502 ist der erwartete Zustand, solange das Lab nicht läuft. Caddy erreicht
+  `lab-api:8000` noch nicht.
+- Ein Preflight von fremder Herkunft trifft den Matcher nicht und geht an die
+  API. Heute antwortet Caddy mit 502, später die API mit 405 — in beiden Fällen
+  ohne CORS-Header.
+- `notBefore` des Zertifikats liegt eine Stunde vor der Ausstellung. Das ist die
+  übliche Rückdatierung von Let's Encrypt, kein Hinweis auf ein älteres
+  Zertifikat.
+- Vor dem Merge beendete Caddy den TLS-Handshake für `api.tomkaufmann.dev` mit
+  `tlsv1 alert internal error`, weil es für diesen Namen weder Site-Block noch
+  Zertifikat gab. Nach dem Merge war das weg.
 
 ## Freigabe
 
