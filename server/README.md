@@ -47,22 +47,27 @@ Maßgeblich ist der Testlauf im Container: Dort läuft Python 3.12 wie im Betrie
 ## Auf den Hauptserver bringen
 
 Übertragen wird per rsync vom Laptop, nicht per `git pull` auf dem Server
-(E-017). `‹BENUTZER›` ist dein Admin-Zugang auf 159.69.188.127.
+(E-017). Der Hauptserver steht in `~/.ssh/config` als Host `globe`
+(159.69.188.127, User `deploy`, Schlüssel `globe_demo`). Mit der nackten IP
+statt des Alias greift dieser Block nicht, ssh bietet dann den falschen
+Schlüssel an und der Server antwortet „Permission denied (publickey)“.
 
-Einmalig das Verzeichnis anlegen:
+Einmalig das Verzeichnis anlegen und dem Deploy-User geben. Danach kommt rsync
+ohne sudo aus, was wichtig ist, weil rsync kein Terminal für eine
+Passwortabfrage hat:
 
 ```bash
-ssh ‹BENUTZER›@159.69.188.127 'sudo install -d -o root -g root -m 0750 /opt/honeypot-lab'
+ssh -t globe 'sudo install -d -m 0750 /opt/honeypot-lab && sudo chown -R "$(id -un):$(id -gn)" /opt/honeypot-lab'
 ```
 
-Dann bei jeder Änderung:
+Dann bei jeder Änderung, aus dem Wurzelverzeichnis des Repos:
 
 ```bash
-rsync -av --delete --exclude '__pycache__' --exclude '.pytest_cache' --rsync-path="sudo rsync" server/ ‹BENUTZER›@159.69.188.127:/opt/honeypot-lab/server/
+rsync -av --delete --exclude '__pycache__' --exclude '.pytest_cache' server/ globe:/opt/honeypot-lab/server/
 ```
 
 ```bash
-rsync -av --rsync-path="sudo rsync" docker-compose.server.yml ‹BENUTZER›@159.69.188.127:/opt/honeypot-lab/
+rsync -av docker-compose.server.yml globe:/opt/honeypot-lab/
 ```
 
 ## Secrets
