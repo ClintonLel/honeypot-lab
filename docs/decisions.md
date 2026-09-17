@@ -38,6 +38,7 @@ bei der Übernahme ausformuliert.
 | E-018 | Eigenes Dateisystem und erzeugte Persona-Dateien           | angenommen                                     |
 | E-019 | Port 22 per eigener nftables-Tabelle auf cowrie-a umleiten | angenommen                                     |
 | E-020 | Lab-Dienste auf dem Hauptserver neben der Webseite         | angenommen                                     |
+| E-021 | Caddy-Block für die Lab-API auf `api.tomkaufmann.dev`      | angenommen                                     |
 
 ---
 
@@ -823,3 +824,47 @@ liegt sie unter `/etc/nftables.d/honeypot.nft`, und
 - Die Seite `/lab` (Schritt 5.2) liefert `gate` aus. Sie entsteht deshalb im
   Repo Website-Demo.
 
+
+---
+
+## E-021: Caddy-Block für die Lab-API auf `api.tomkaufmann.dev`
+
+- Status: angenommen
+- Datum: 2026-09-17
+- Quelle: Schritt 3.2, Pull Request `ClintonLel/Website-Demo#13`
+
+**Entscheidung:**
+
+- Der vorhandene Caddy aus Website-Demo bekommt die Netze `default` und
+  `lab_edge` und einen Site-Block `api.{$DOMAIN}`. Die Änderung läuft über einen
+  Pull Request, nicht direkt auf dem Server.
+- Der Block enthält: HSTS und `-Server` wie der Hauptblock, automatisches TLS,
+  `request_body { max_size 1MB }`, CORS ausschließlich für `https://{$DOMAIN}`
+  (mit `defer` und einem eigenen `handle` für Preflight-Anfragen), `/stream` in
+  einem eigenen `handle` mit `flush_interval -1` und ohne `encode`, alles andere
+  mit `encode zstd gzip` an `lab-api:8000`.
+- Reihenfolge: `docker network create lab_edge` auf dem Server, dann Merge.
+
+**Begründung:**
+
+- TLS holt Caddy selbst über die HTTP-Challenge auf Port 80. Die Zertifikate
+  liegen im Volume `caddy_data` und überleben einen Neuaufbau des Containers.
+- Server-Sent Events vertragen weder Puffer noch Kompression. `flush_interval
+  -1` schiebt jedes Ereignis sofort raus, deshalb steht `/stream` in einem
+  eigenen `handle` ohne `encode`. Statistik-Antworten werden weiter komprimiert.
+- Das Größenlimit greift, bevor die API den Body liest. 1 MB reicht für die
+  Batches des Sensors.
+- CORS gehört in den Proxy, nicht in die Anwendung: eine Stelle, und die API
+  muss die Domain der Webseite nicht kennen. `defer` setzt den Header erst beim
+  Schreiben der Antwort, sonst könnten zwei Werte nebeneinander stehen.
+
+**Konsequenzen:**
+
+- Die FastAPI-App aus Schritt 3.3 setzt **keine** eigenen CORS-Header.
+- Der API-Container muss im Netz `lab_edge` den Alias `lab-api` tragen und im
+  Container auf Port 8000 lauschen.
+- Vector muss seine Batches (Schritt 4.2) unter 1 MB halten.
+- Weitere Endpunkte laufen über den allgemeinen `handle`-Block. Ein zweiter
+  Pfad mit Streaming braucht einen eigenen `handle` mit `flush_interval -1`.
+- Bis das Lab läuft, antwortet `api.tomkaufmann.dev` mit 502, hat aber schon ein
+  gültiges Zertifikat.

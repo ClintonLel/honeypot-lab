@@ -1,9 +1,11 @@
 # Hauptserver: Bestandsaufnahme und Plan
 
-Stand: 2026-09-17 (Schritt 3.1). Grundlage sind die Ausgabe der Befehle aus dem
-Bauplan auf dem Hauptserver, das Repo `ClintonLel/Website-Demo` (Stand `main`)
-und die öffentlichen DNS-Einträge. Noch ist nichts umgesetzt. Freigegeben ist
-Variante A mit rsync (siehe „Freigabe“).
+Stand: 2026-09-17 (Schritte 3.1 und 3.2). Grundlage sind die Ausgabe der Befehle
+aus dem Bauplan auf dem Hauptserver, das Repo `ClintonLel/Website-Demo` (Stand
+`main`) und die öffentlichen DNS-Einträge. Freigegeben ist Variante A mit rsync
+(siehe „Freigabe“). Umgesetzt ist bisher nur die Anbindung an Caddy (Schritt
+3.2, Pull Request `ClintonLel/Website-Demo#13`); die Lab-Dienste selbst folgen
+in Schritt 3.3.
 
 ## Bestandsaufnahme
 
@@ -198,7 +200,8 @@ wichtig, denn Compose bricht ab, wenn ein als `external` markiertes Netz fehlt.
    die IP liefert, sonst scheitert Caddys Zertifikatsanfrage.
 2. **Netz auf dem Server anlegen**, einmalig und vor dem Merge:
    `docker network create lab_edge`.
-3. **Pull Request in Website-Demo** (Schritt 3.2):
+3. **Pull Request in Website-Demo** (Schritt 3.2, offen seit 2026-09-17:
+   `ClintonLel/Website-Demo#13`, Branch `lab-api`):
    - In `docker-compose.yml` bekommt `caddy` die Netze `default` und
      `lab_edge`. `default` muss ausdrücklich dastehen, sonst verliert Caddy die
      Verbindung zu `gate`.
@@ -243,27 +246,63 @@ dazu.
 - **Nachteil:** Die Anbindung hängt am internen Netznamen eines fremden
   Projekts.
 
-**Site-Block, Skizze für Schritt 3.2 (noch nicht umgesetzt).** Wie die
-bestehenden Blöcke nutzt er `{$DOMAIN}`:
+**Site-Block, umgesetzt in Schritt 3.2** (Pull Request
+`ClintonLel/Website-Demo#13`). Wie die bestehenden Blöcke nutzt er `{$DOMAIN}`:
 
 ```caddyfile
 api.{$DOMAIN} {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
 	request_body {
 		max_size 1MB
 	}
-	@stream path /stream
-	reverse_proxy @stream lab-api:8000 {
-		flush_interval -1
+
+	@browser header Origin https://{$DOMAIN}
+	header @browser {
+		defer
+		Access-Control-Allow-Origin "https://{$DOMAIN}"
+		+Vary Origin
 	}
-	reverse_proxy lab-api:8000
+
+	@preflight {
+		method OPTIONS
+		header Origin https://{$DOMAIN}
+	}
+	handle @preflight {
+		header {
+			Access-Control-Allow-Methods "GET, POST, OPTIONS"
+			Access-Control-Allow-Headers "Content-Type"
+			Access-Control-Max-Age "86400"
+		}
+		respond 204
+	}
+
+	handle /stream* {
+		reverse_proxy lab-api:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		encode zstd gzip
+		reverse_proxy lab-api:8000
+	}
 }
 ```
 
 - **Zertifikat:** Caddy holt es selbst über die HTTP-Challenge auf Port 80,
-  sobald der DNS-Eintrag steht. HSTS mit `includeSubDomains` aus dem
-  Hauptblock gilt auch für `api`.
-- **CORS:** Laut Bauplan nur für `https://tomkaufmann.dev`, im Caddy-Block
-  (Schritt 3.2).
+  sobald der DNS-Eintrag steht. HSTS setzt der Block selbst, zusätzlich gilt
+  `includeSubDomains` aus dem Hauptblock auch für `api`.
+- **CORS:** nur `https://{$DOMAIN}`. Preflight-Anfragen beantwortet Caddy
+  selbst, die API sieht keine `OPTIONS`. `defer` setzt den Header erst beim
+  Schreiben der Antwort, damit keine zwei Werte nebeneinander stehen. Die API
+  darf deshalb keine eigenen CORS-Header setzen (E-021).
+- **Server-Sent Events:** `/stream` liegt in einem eigenen `handle` mit
+  `flush_interval -1` und ohne `encode`; Kompression würde den Stream wieder
+  puffern. Alle anderen Antworten werden komprimiert.
 - **Request-Größe:** `max_size 1MB` gilt auch für `/ingest`. Vector muss seine
   Batches darunter halten (Schritt 4.2).
 - **Optional:** `/ingest` und `/v1/chat/completions` zusätzlich auf die IP des
@@ -303,13 +342,69 @@ api.{$DOMAIN} {
 | Anbindung                              | Variante A, eigenes Netz `lab_edge`                         |
 | Übertragung                            | rsync vom Laptop                                           |
 
-**Vor Schritt 3.2 prüfen:** Stimmt der Stand auf dem Server mit `main` überein?
-Auf dem Hauptserver ausführen. Erwartet werden ein leeres `git status` und die
-Prüfsummen `8828acf5…` (docker-compose.yml) und `3753238c…` (Caddyfile):
+**Vor Schritt 3.2 geprüft (2026-09-17):** Stimmt der Stand auf dem Server mit
+`main` überein? Ja: leeres `git status`, HEAD `cc3bb5d` (aktueller `main`) und
+die Prüfsummen `8828acf5…` (docker-compose.yml) und `3753238c…` (Caddyfile).
+Derselbe Befehl prüft das jederzeit erneut, auf dem Hauptserver:
 
 ```bash
 cd /opt/globe-demo && git status --short && git log -1 --oneline && sha256sum docker-compose.yml Caddyfile
 ```
+
+## Schritt 3.2: Rollout und Prüfung
+
+Alle Befehle laufen auf dem Hauptserver, sofern nicht anders vermerkt.
+
+1. **Caddyfile des Branches prüfen, bevor er gemerged wird.** Ein Fehler im
+   Caddyfile würde beim Deploy den Caddy-Container stoppen und die Webseite
+   mitnehmen. Der Check lädt nur einen Ref, der Checkout bleibt sauber:
+
+   ```bash
+   cd /opt/globe-demo && git fetch --depth=1 origin lab-api && git show FETCH_HEAD:Caddyfile > /tmp/Caddyfile.lab
+   ```
+
+   ```bash
+   docker run --rm -e DOMAIN=tomkaufmann.dev -e ACME_EMAIL=dummy@example.com -v /tmp/Caddyfile.lab:/etc/caddy/Caddyfile:ro caddy:2-alpine caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
+   ```
+
+   Erwartet: `Valid configuration`.
+
+2. **Netz anlegen**, einmalig und vor dem Merge. Fehlt es, bricht
+   `docker compose up -d` ab, weil `lab_edge` als `external` eingetragen ist:
+
+   ```bash
+   docker network create lab_edge
+   ```
+
+3. **Pull Request mergen.** Die Pipeline macht `git pull` und
+   `docker compose up -d --build`. Caddy wird neu gebaut, `gate` bleibt stehen.
+
+4. **Zertifikat und Antwort prüfen** (geht auch vom Laptop):
+
+   ```bash
+   curl -sS -o /dev/null -w 'HTTP %{http_code}, TLS-Pruefung %{ssl_verify_result}\n' https://api.tomkaufmann.dev/
+   ```
+
+   Erwartet: `HTTP 502` (die API kommt erst in Schritt 3.3) und
+   `TLS-Pruefung 0`, also ein gültiges Zertifikat. Aussteller und Laufzeit:
+
+   ```bash
+   echo | openssl s_client -connect api.tomkaufmann.dev:443 -servername api.tomkaufmann.dev 2>/dev/null | openssl x509 -noout -subject -issuer -dates
+   ```
+
+5. **Webseite gegenprüfen:**
+
+   ```bash
+   curl -sS -o /dev/null -w '%{http_code}\n' https://tomkaufmann.dev/ https://www.tomkaufmann.dev/
+   ```
+
+6. **Netze von Caddy kontrollieren:**
+
+   ```bash
+   docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' globe-demo-caddy-1
+   ```
+
+   Erwartet: `globe-demo_default lab_edge`.
 
 ## Freigabe
 
