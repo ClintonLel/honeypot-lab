@@ -127,8 +127,12 @@ Vector den Bestand noch einmal liest. Doppelte Ereignisse erkennt die API am
 Inhalts-Hash (E-024), es entstehen also keine Duplikate:
 
 ```bash
-ssh hp-sensor 'cd /opt/honeypot-lab/sensor && sudo docker compose stop vector && sudo rm -rf /srv/honeypot/vector/* && sudo docker compose up -d vector'
+ssh hp-sensor 'cd /opt/honeypot-lab/sensor && sudo docker compose stop vector && sudo find /srv/honeypot/vector -mindepth 1 -delete && sudo docker compose up -d vector'
 ```
+
+`find` statt `rm -rf .../*`: Das Sternchen würde die Shell des angemeldeten
+Users auflösen, und der darf das Verzeichnis mit Rechten 0700 nicht lesen. Es
+bliebe stehen, `rm -f` täte stillschweigend nichts.
 
 ## Test: Rotation und Neustart (Schritt 4.2)
 
