@@ -436,6 +436,35 @@ Anmerkungen:
   `tlsv1 alert internal error`, weil es für diesen Namen weder Site-Block noch
   Zertifikat gab. Nach dem Merge war das weg.
 
+## Schritt 3.3: Ergebnis am 2026-09-18
+
+Lab-API, Datenbank und Worker laufen auf dem Hauptserver. Abgenommen mit:
+
+| Prüfung                                | Ergebnis                                             |
+|----------------------------------------|------------------------------------------------------|
+| `docker compose ps`                    | `db` healthy, `api` und `worker` laufen, keine Host-Ports |
+| Migration                              | `alembic upgrade head`, acht Tabellen (sieben plus `alembic_version`) |
+| `https://api.tomkaufmann.dev/health`   | HTTP 200, `{"status":"ok","database":"ok"}`          |
+| pytest im Container                    | 36 Tests grün, nichts übersprungen                   |
+| PostgreSQL von außen                   | Port 5432 und 8000 vom Laptop aus nicht erreichbar   |
+| Webseite                               | HTTP 200, unverändert                                |
+
+Zwei Dinge sind dabei aufgefallen und behoben:
+
+- **Der erste Testlauf hat den `IP_HMAC_KEY` ausgegeben.** Ein Test verglich
+  gegen die Umgebung des ausführenden Rechners; im Container waren die
+  Variablen gesetzt, der Vergleich schlug fehl, und pytest schreibt bei einem
+  fehlgeschlagenen Vergleich beide Seiten in die Ausgabe. Der Schlüssel wurde
+  am 2026-09-18 ersetzt, bevor das erste Event in der Datenbank war — zu
+  diesem Zeitpunkt kostet ein Wechsel nichts (E-022). Der Test vergleicht jetzt
+  nur noch einen Wahrheitswert, und `--tb=short` verhindert, dass lange
+  Tracebacks den Verbindungsstring mit Passwort zeigen.
+- **Die Datenbanktests verbanden sich mit einem Dummy-Passwort.** Eine Fixture
+  hatte Testwerte direkt in `os.environ` gesetzt und nicht aufgeräumt. Jetzt
+  übernimmt das `monkeypatch`.
+
+Beides waren Fehler in den Tests, nicht im laufenden System.
+
 ## Freigabe
 
 - [x] Plan freigegeben am 2026-09-17: Variante A (`lab_edge`), Übertragung per rsync
