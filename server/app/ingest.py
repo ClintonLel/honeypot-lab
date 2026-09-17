@@ -49,7 +49,18 @@ async def require_sensor_token(
     expected = settings_of(request).ingest_token.get_secret_value()
     given = credentials.credentials if credentials else ""
     if not expected or not hmac.compare_digest(given, expected):
-        # Kein Hinweis darauf, ob das Token fehlte oder falsch war.
+        # Für die Fehlersuche die Form des Headers festhalten, nie den Wert:
+        # Schema, Länge und ob ein Platzhalter durchgereicht wurde.
+        logger.warning(
+            "ingest abgelehnt",
+            extra={
+                "scheme": credentials.scheme if credentials else None,
+                "laenge": len(given),
+                "erwartete_laenge": len(expected),
+                "sieht_aus_wie_platzhalter": given.startswith("${"),
+            },
+        )
+        # Die Antwort selbst sagt nicht, ob das Token fehlte oder falsch war.
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="nicht berechtigt")
 
 
