@@ -1,0 +1,43 @@
+# Honeypot-Lab: Dienste auf dem Sensor
+#
+# Schritt 2.2: cowrie-a (klassische Shell). cowrie-b und Vector folgen später.
+# Vorbereitung und Befehle: sensor/README.md
+
+name: honeypot
+
+x-cowrie: &cowrie
+  image: cowrie/cowrie:3.0.14@sha256:f6ea2e847a1837794cd570322a25a9da819824c70a718600fa6de4c1eba66626
+  network_mode: host
+  user: "999:999"
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  mem_limit: 512m
+  pids_limit: 256
+  cpus: 1.0
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  cowrie-a:
+    <<: *cowrie
+    container_name: cowrie-a
+    environment:
+      COWRIE_HONEYPOT_SENSOR_NAME: hp-a
+      COWRIE_HONEYPOT_BACKEND: shell
+      # Nur IPv4, von außen nur über die Umleitung von Port 22 erreichbar (Schritt 2.3)
+      COWRIE_SSH_LISTEN_ENDPOINTS: tcp:2222:interface=0.0.0.0
+    volumes:
+      - ./cowrie:/cowrie/cowrie-git/etc:ro
+      - ./persona:/cowrie/persona:ro
+      - /srv/honeypot/persona/fs.pickle:/cowrie/fs.pickle:ro
+      - /srv/honeypot/hostkeys:/cowrie/hostkeys:ro
+      - /srv/honeypot/a/var:/cowrie/cowrie-git/var

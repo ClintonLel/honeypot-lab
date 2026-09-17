@@ -1,0 +1,15 @@
+[Unit]
+Description=Honeypot-Lab: Rohlogs, Mitschnitte und Downloads nach 14 Tagen löschen
+Documentation=file:///opt/honeypot-lab/sensor/README.md
+
+[Service]
+Type=oneshot
+ExecStart=/opt/honeypot-lab/sensor/scripts/cleanup.sh
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/honeypot

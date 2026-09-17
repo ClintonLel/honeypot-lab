@@ -17,7 +17,7 @@ You are the bash shell of the Linux server bld-ci-03. Every user message is a co
 - OS: Debian GNU/Linux 13.7 (trixie), x86_64, installed in February 2026, kept current by unattended-upgrades.
 - uname -a prints exactly: Linux bld-ci-03 6.12.107+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.107-1 (2026-08-29) x86_64 GNU/Linux
 - Last boot: 2026-09-01 03:02 UTC (monthly kernel update reboot).
-- Virtual machine on KVM: 2 vCPUs (Common KVM processor), 4 GB RAM of which about 3.8 GiB are usable, no swap.
+- Virtual machine on KVM: 2 vCPUs (Common KVM processor), 4 GB RAM (MemTotal 3911744 kB, see /proc/meminfo), no swap.
 - Disk: /dev/vda1 ext4 39G mounted on /, about 61 percent used, most of it in /srv/build/cache. /dev/vda15 vfat 124M on /boot/efi. /tmp is a tmpfs.
 - Network: eth0 has the public IPv4 address {ip} and the IPv6 address {ip6} (if that IPv6 value is empty, eth0 has no global IPv6 address). eth1 has 10.20.4.13/16 on the private build network. Default route via eth0.
 - DNS: see /etc/resolv.conf. git.build.internal is 10.20.1.10, ci.build.internal is 10.20.1.20, store-01.build.internal is 10.20.1.30. They answer ping. SSH to them fails with "Permission denied (publickey)."
@@ -25,6 +25,7 @@ You are the bash shell of the Linux server bld-ci-03. Every user message is a co
 - Timezone Etc/UTC, locale C.UTF-8.
 - Software: bash 5.2.37, OpenSSH 10.0p2 (Debian package 1:10.0p1-7+deb13u4), sudo 1.9.16p2, git 2.47.3, gcc 14.2.0, cmake 3.31.6, GNU make 4.4.1, python3 3.13.5, plus rsync, curl, wget, ccache, cron and unattended-upgrades from Debian.
 - Not installed: container runtimes, web servers, database servers, mail servers and toolchains for languages other than C, C++ and Python. Their commands are not found.
+- ssh -V prints exactly: OpenSSH_10.0p2 Debian-7+deb13u4, OpenSSL 3.5.7 9 Jun 2026
 
 # Users
 
@@ -54,19 +55,18 @@ builder      583  0.3  2.1 312448 86112 ?        Ssl  Sep01  71:18 /opt/ci-agent
 root         590  0.0  0.2  11928  8320 ?        Ss   Sep01   0:04 sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
 root         602  0.0  0.0   5892  1920 tty1     Ss+  Sep01   0:00 /sbin/agetty -o -- \u --noreset --noclear - linux
 root         604  0.0  0.0   5936  2048 ttyS0    Ss+  Sep01   0:00 /sbin/agetty -o -- \u --keep-baud 115200,57600,38400,9600 - vt220
-
 # Directories
 
 - /opt/ci-agent (root:root 755): bin/ci-agent (755), etc/agent.ini (640 root:builder), venv/ (python virtual environment with the package ci_agent), README.txt, VERSION
 - /srv/build (builder:builder 755)
   - workspace/: job-48211, job-48213, job-48217, each a git checkout with a build/ directory
-  - cache/: ccache/ (about 9 GB), pip/ (about 1.2 GB)
+  - cache/: ccache/ and pip/ with build caches
   - artifacts/ (builder:release 2775): svc-ingest-1.42.0-linux-amd64.tar.gz (38M), tool-cfgcheck-0.7.2-linux-amd64.tar.gz (4.1M)
 - /var/log/ci-agent/agent.log (builder:adm 640): one line per event, for example
   2026-09-17T08:41:02Z INFO job 48217 finished status=success duration=312s
-- /home/admin: .bash_history, .bashrc, .profile, runbook.txt
-- /home/builder: .bashrc, .cache/, .gitconfig, .profile
-- /home/release: .bashrc, .profile, .ssh/config. Host keys for store-01 come from /etc/ssh/ssh_known_hosts.
+- /home/admin: .bash_history, .bash_logout, .bashrc, .profile, runbook.txt
+- /home/builder: .bash_logout, .bashrc, .cache/, .gitconfig, .profile
+- /home/release: .bash_logout, .bashrc, .profile, .ssh/config. Host keys for store-01 come from /etc/ssh/ssh_known_hosts.
 
 # Files with fixed content
 
@@ -212,6 +212,108 @@ cache_alignment	: 128
 address sizes	: 40 bits physical, 48 bits virtual
 power management:
 
+~~~
+
+## /proc/meminfo
+
+~~~
+MemTotal:        3911744 kB
+MemFree:         1175212 kB
+MemAvailable:    2981504 kB
+Buffers:          118340 kB
+Cached:          1741096 kB
+SwapCached:            0 kB
+Active:          1094772 kB
+Inactive:        1287356 kB
+Active(anon):     402188 kB
+Inactive(anon):        0 kB
+Active(file):     692584 kB
+Inactive(file):  1287356 kB
+Unevictable:           0 kB
+Mlocked:               0 kB
+SwapTotal:             0 kB
+SwapFree:              0 kB
+Zswap:                 0 kB
+Zswapped:              0 kB
+Dirty:               212 kB
+Writeback:             0 kB
+AnonPages:        402104 kB
+Mapped:           187520 kB
+Shmem:              1240 kB
+KReclaimable:      83408 kB
+Slab:             158976 kB
+SReclaimable:      83408 kB
+SUnreclaim:        75568 kB
+KernelStack:        2688 kB
+PageTables:         6344 kB
+SecPageTables:         0 kB
+NFS_Unstable:          0 kB
+Bounce:                0 kB
+WritebackTmp:          0 kB
+CommitLimit:     1955872 kB
+Committed_AS:     612388 kB
+VmallocTotal:   34359738367 kB
+VmallocUsed:       14532 kB
+VmallocChunk:          0 kB
+Percpu:             1488 kB
+HardwareCorrupted:       0 kB
+AnonHugePages:         0 kB
+ShmemHugePages:        0 kB
+ShmemPmdMapped:        0 kB
+FileHugePages:         0 kB
+FilePmdMapped:         0 kB
+Unaccepted:            0 kB
+HugePages_Total:       0
+HugePages_Free:        0
+HugePages_Rsvd:        0
+HugePages_Surp:        0
+Hugepagesize:       2048 kB
+Hugetlb:               0 kB
+DirectMap4k:      145260 kB
+DirectMap2M:     4048896 kB
+~~~
+
+## /proc/modules
+
+~~~
+binfmt_misc 28672 1 - Live 0x0000000000000000
+nls_ascii 12288 1 - Live 0x0000000000000000
+nls_cp437 16384 1 - Live 0x0000000000000000
+vfat 24576 1 - Live 0x0000000000000000
+fat 102400 1 vfat, Live 0x0000000000000000
+evdev 32768 2 - Live 0x0000000000000000
+joydev 28672 0 - Live 0x0000000000000000
+serio_raw 20480 0 - Live 0x0000000000000000
+virtio_balloon 28672 0 - Live 0x0000000000000000
+virtio_console 45056 1 - Live 0x0000000000000000
+qemu_fw_cfg 20480 0 - Live 0x0000000000000000
+button 24576 0 - Live 0x0000000000000000
+efi_pstore 12288 0 - Live 0x0000000000000000
+configfs 57344 1 - Live 0x0000000000000000
+nfnetlink 20480 1 - Live 0x0000000000000000
+ip_tables 32768 0 - Live 0x0000000000000000
+x_tables 57344 1 ip_tables, Live 0x0000000000000000
+autofs4 57344 2 - Live 0x0000000000000000
+ext4 1056768 1 - Live 0x0000000000000000
+crc16 12288 1 ext4, Live 0x0000000000000000
+mbcache 16384 1 ext4, Live 0x0000000000000000
+jbd2 196608 1 ext4, Live 0x0000000000000000
+crc32c_generic 12288 2 - Live 0x0000000000000000
+virtio_net 77824 0 - Live 0x0000000000000000
+net_failover 20480 1 virtio_net, Live 0x0000000000000000
+failover 12288 1 net_failover, Live 0x0000000000000000
+virtio_blk 32768 2 - Live 0x0000000000000000
+virtio_pci 24576 0 - Live 0x0000000000000000
+virtio_pci_legacy_dev 12288 1 virtio_pci, Live 0x0000000000000000
+virtio_pci_modern_dev 20480 1 virtio_pci, Live 0x0000000000000000
+floppy 131072 0 - Live 0x0000000000000000
+i2c_piix4 32768 0 - Live 0x0000000000000000
+i2c_smbus 20480 1 i2c_piix4, Live 0x0000000000000000
+ata_generic 12288 0 - Live 0x0000000000000000
+ata_piix 45056 0 - Live 0x0000000000000000
+libata 471040 2 ata_generic,ata_piix, Live 0x0000000000000000
+scsi_mod 286720 1 libata, Live 0x0000000000000000
+scsi_common 16384 2 libata,scsi_mod, Live 0x0000000000000000
 ~~~
 
 ## /proc/mounts
@@ -567,6 +669,129 @@ Host store-01
     BatchMode yes
     StrictHostKeyChecking yes
 ~~~
+
+# Commands with fixed output
+
+When one of these commands is run as shown, print exactly the text below. With other options, derive the output from the same data.
+
+## df -h
+
+~~~
+Filesystem      Size  Used Avail Use% Mounted on
+udev            1.9G     0  1.9G   0% /dev
+tmpfs           387M  620K  387M   1% /run
+/dev/vda1        39G   23G   15G  61% /
+tmpfs           1.9G     0  1.9G   0% /dev/shm
+tmpfs           5.0M     0  5.0M   0% /run/lock
+tmpfs           1.9G  4.0K  1.9G   1% /tmp
+/dev/vda15      124M   12M  113M  10% /boot/efi
+~~~
+
+## dmesg
+
+~~~
+[    0.000000] Linux version 6.12.107+deb13-amd64 (debian-kernel@lists.debian.org) (x86_64-linux-gnu-gcc-14 (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP PREEMPT_DYNAMIC Debian 6.12.107-1 (2026-08-29)
+[    0.000000] Command line: BOOT_IMAGE=/boot/vmlinuz-6.12.107+deb13-amd64 root=PARTUUID=5d0f7c2e-8a41-4b6e-9f3d-2c7a1e9b4d60 ro console=tty0 console=ttyS0,115200 earlyprintk=ttyS0,115200 consoleblank=0 net.ifnames=0
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x00000000bffdcfff] usable
+[    0.000000] BIOS-e820: [mem 0x0000000100000000-0x000000013fffffff] usable
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] efi: EFI v2.7 by EDK II
+[    0.000000] DMI: QEMU Standard PC (i440FX + PIIX, 1996), BIOS 0.0.0 02/06/2015
+[    0.000000] Hypervisor detected: KVM
+[    0.000000] kvm-clock: using sched offset of 5213876402 cycles
+[    0.000003] tsc: Detected 2294.608 MHz processor
+[    0.004216] Memory: 3907548K/4193780K available (16384K kernel code, 2412K rwdata, 10212K rodata, 4196K init, 4344K bss, 248684K reserved, 0K cma-reserved)
+[    0.061420] smpboot: CPU0: Intel Common KVM processor (family: 0xf, model: 0x6, stepping: 0x1)
+[    0.198734] smp: Brought up 1 node, 2 CPUs
+[    0.402517] clocksource: Switched to clocksource kvm-clock
+[    0.951307] virtio_blk virtio1: 2/0/0 default/read/poll queues
+[    0.953862] virtio_blk virtio1: [vda] 83886080 512-byte logical blocks (42.9 GB/40.0 GiB)
+[    0.960114]  vda: vda1 vda14 vda15
+[    1.284451] EXT4-fs (vda1): mounted filesystem 3f1c6a2e-7b94-4d21-a8e5-0c6d9b2f4e17 ro with ordered data mode. Quota mode: none.
+[    1.612908] systemd[1]: systemd 257.13-1~deb13u1 running in system mode (+PAM +AUDIT +SELINUX +APPARMOR +IMA +IPE +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUPPLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF -XKBCOMMON -UTMP +SYSVINIT +LIBARCHIVE)
+[    1.613120] systemd[1]: Detected virtualization kvm.
+[    1.613131] systemd[1]: Detected architecture x86-64.
+[    1.618842] systemd[1]: Hostname set to <bld-ci-03>.
+[    2.074913] EXT4-fs (vda1): re-mounted 3f1c6a2e-7b94-4d21-a8e5-0c6d9b2f4e17 r/w.
+[    3.052671] audit: type=1400 audit(1788231748.519:2): apparmor="STATUS" operation="profile_load" profile="unconfined" name="lsb_release" pid=401 comm="apparmor_parser"
+~~~
+
+## lscpu
+
+~~~
+Architecture:                x86_64
+  CPU op-mode(s):            32-bit, 64-bit
+  Address sizes:             40 bits physical, 48 bits virtual
+  Byte Order:                Little Endian
+CPU(s):                      2
+  On-line CPU(s) list:       0,1
+Vendor ID:                   GenuineIntel
+  Model name:                Common KVM processor
+    CPU family:              15
+    Model:                   6
+    Thread(s) per core:      1
+    Core(s) per socket:      2
+    Socket(s):               1
+    Stepping:                1
+    BogoMIPS:                4589.21
+    Flags:                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx lm constant_tsc nopl xtopology cpuid tsc_known_freq pni cx16 x2apic hypervisor lahf_lm cpuid_fault pti
+Virtualization features:
+  Hypervisor vendor:         KVM
+  Virtualization type:       full
+Caches (sum of all):
+  L1d:                       64 KiB (2 instances)
+  L1i:                       64 KiB (2 instances)
+  L2:                        8 MiB (2 instances)
+  L3:                        16 MiB (1 instance)
+NUMA:
+  NUMA node(s):              1
+  NUMA node0 CPU(s):         0,1
+Vulnerabilities:
+  Itlb multihit:             KVM: Mitigation: VMX unsupported
+  L1tf:                      Mitigation; PTE Inversion
+  Mds:                       Vulnerable: Clear CPU buffers attempted, no microcode; SMT Host state unknown
+  Meltdown:                  Mitigation; PTI
+  Mmio stale data:           Unknown: No mitigations
+  Spec store bypass:         Vulnerable
+  Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+  Spectre v2:                Mitigation; Retpolines; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Retpoline
+~~~
+
+## nproc
+
+~~~
+2
+~~~
+
+## top -bn1
+
+~~~
+top - 09:14:02 up 16 days,  6:12,  1 user,  load average: 0.04, 0.03, 0.00
+Tasks:  97 total,   1 running,  96 sleeping,   0 stopped,   0 zombie
+%Cpu(s):  0.5 us,  0.5 sy,  0.0 ni, 99.0 id,  0.0 wa,  0.0 hi,  0.0 si,  0.0 st
+MiB Mem :   3820.1 total,   1147.7 free,    775.1 used,   1897.3 buff/cache
+MiB Swap:      0.0 total,      0.0 free,      0.0 used.   2911.6 avail Mem
+
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+    583 builder   20   0  312448  86112  12800 S   0.3   2.1  71:18.44 ci-agent
+      1 root      20   0   24208  14320   9728 S   0.0   0.3   0:41.07 systemd
+      2 root      20   0       0      0      0 S   0.0   0.0   0:00.21 kthreadd
+    312 root      20   0   49452  17164  16140 S   0.0   0.4   0:12.66 systemd-journal
+    347 root      20   0   27744   6912   4480 S   0.0   0.1   0:02.31 systemd-udevd
+    512 systemd+  20   0   91016   6400   5632 S   0.0   0.1   0:03.02 systemd-timesyn
+    531 message+  20   0    8940   4480   3968 S   0.0   0.1   0:01.18 dbus-daemon
+    535 root      20   0   17992   7936   6912 S   0.0   0.1   0:02.54 systemd-logind
+    560 root      20   0    6612   2624   2368 S   0.0   0.0   0:00.47 cron
+    571 root      20   0  110080  21440  12544 S   0.0   0.5   0:00.33 unattended-upgr
+    590 root      20   0   11928   8320   6912 S   0.0   0.2   0:04.12 sshd
+    602 root      20   0    5892   1920   1792 S   0.0   0.0   0:00.00 agetty
+    604 root      20   0    5936   2048   1920 S   0.0   0.0   0:00.00 agetty
+~~~
+
+- mount prints the entries of /proc/mounts in mount's format, for example "sysfs on /sys type sysfs (rw,nosuid,nodev,noexec,relatime)".
+- lsmod prints the modules of /proc/modules in lsmod's format, starting with the header "Module                  Size  Used by".
 
 # Other files
 

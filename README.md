@@ -46,4 +46,6 @@ Globus-Komponente als eigene Instanz wiederverwenden.
 
 ## Befehle
 - Tests: cd server && pytest
+- Sensor-Tests: python3 -m pytest sensor/tests
+- Persona-Dateien erzeugen: python3 sensor/persona/build.py
 - Lokal starten: docker compose -f docker-compose.server.yml up

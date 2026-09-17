@@ -34,6 +34,8 @@ bei der Übernahme ausformuliert.
 | E-014 | Persona bld-ci-03 für beide Varianten                     | angenommen                                     |
 | E-015 | Kein Banner vor dem Login, vollständiger Persona-Prompt   | angenommen                                     |
 | E-016 | Echte Downloads in cowrie-b über Cowries Download-Code    | vorgeschlagen                                  |
+| E-017 | Cowrie-Konfiguration und Betrieb von cowrie-a             | angenommen                                     |
+| E-018 | Eigenes Dateisystem und erzeugte Persona-Dateien          | angenommen                                     |
 
 ---
 
@@ -618,3 +620,118 @@ statt des fest eingebauten `Welcome to bld-ci-03`.
   gelten für beide Varianten gleich.
 - Die Umsetzung muss vor Schritt 7.1 stehen. Die Liste der Grenzen in
   `docs/method.md` hängt davon ab.
+
+---
+
+## E-017: Cowrie-Konfiguration und Betrieb von cowrie-a
+
+- Status: angenommen
+- Datum: 2026-09-17
+- Quelle: Schritt 2.2, Entscheidungen des Users zu SFTP, Logins und Übertragung
+
+**Entscheidung:**
+
+- `sensor/cowrie/cowrie.cfg` ist die gemeinsame Konfiguration für A und B. Was
+  nur eine Variante betrifft (`sensor_name`, Port, Backend), steht als
+  Umgebungsvariable in `sensor/docker-compose.yml`.
+- Beide Varianten nutzen dieselben SSH-Host-Keys aus `/srv/honeypot/hostkeys`.
+- `userdb.txt` nimmt nur `root` und `admin` an, mit jedem Passwort außer dem
+  eigenen Benutzernamen und `123456`.
+- SFTP und SSH-Weiterleitung (direct-tcpip) bleiben in cowrie-a an, wie im
+  Cowrie-Standard. Weiterleitungen werden nur protokolliert, nie ausgeführt.
+- cowrie-a nutzt das Image `cowrie/cowrie:3.0.14` mit Digest und läuft mit
+  `network_mode: host` nur auf `tcp:2222`. Die Laufzeitdaten liegen unter
+  `/srv/honeypot/a/var`.
+- Härtung: `no-new-privileges`, `cap_drop: ALL`, schreibgeschütztes
+  Dateisystem, 512 MB RAM, Prozesslimit, Rotation der Docker-Logs.
+- `sensor/` kommt per rsync vom Laptop auf den Sensor, nach
+  `/opt/honeypot-lab/sensor`, Eigentümer root.
+
+**Begründung:**
+
+- Eine gemeinsame Datei verhindert, dass A und B bei Persona, Limits oder
+  Sicherheitseinstellungen auseinanderlaufen (E-002).
+- Eigene Host-Keys je Instanz würden die Varianten schon vor dem Login
+  unterscheidbar machen.
+- Die Persona kennt nur diese Konten mit Login-Shell. Andere Benutzernamen
+  müssten beide Varianten improvisieren. `root` und `admin` probieren Bots am
+  häufigsten.
+- SFTP und Weiterleitungsversuche liefern in A zusätzliche Daten. Die
+  Entscheidung dafür hat der User bewusst getroffen, obwohl B beides nicht kann.
+- In Cowrie 3.0.14 stecken `cowrie.cfg.dist` und `userdb.example` im
+  Python-Paket. Anders als im Artifact beschrieben, muss man sie nicht mehr in
+  das eingebundene `etc` kopieren. Einen Crash-Reporter gibt es nicht.
+- rsync braucht keine Zugangsdaten zum Repo auf einem Server, der als
+  kompromittierbar gilt.
+
+**Konsequenzen:**
+
+- SFTP-Uploads und direct-tcpip-Kanäle sind ein bekannter Unterschied zwischen
+  den Varianten. Er steht in `persona.md` und gehört in die Methodik.
+  Auswertungen, die nur Shell-Sitzungen vergleichen, klammern ihn aus.
+- `sensor/tests/test_cowrie_config.py` prüft Konfiguration, Logins und
+  Einbindungen gegen die Persona.
+- Das schreibgeschützte Dateisystem funktioniert mit Cowrie 3.0.14. Das hat der
+  Start auf dem Sensor am 2026-09-17 bestätigt.
+- Cowrie liest `userdb.txt` als ASCII. Umlaute in Kommentaren brechen jeden
+  Login, ein Test prüft das jetzt.
+- Ubuntu 26.04 nutzt die uutils-coreutils. Deren `install -o/-g` nimmt keine
+  numerischen IDs ohne passenden Host-User an. Die Skripte setzen Eigentümer
+  deshalb mit `chown`. Auf dem Host gehört GID 999 zu `systemd-journal`, die
+  Datenverzeichnisse sind deshalb `0700`.
+
+---
+
+## E-018: Eigenes Dateisystem und erzeugte Persona-Dateien
+
+- Status: angenommen
+- Datum: 2026-09-17
+- Quelle: Schritt 2.2, Vorschlag aus Schritt 2.1, Entscheidung des Users zum Bauort
+
+**Entscheidung:**
+
+- `sensor/scripts/build-fs-pickle.sh` baut `fs.pickle` auf dem Sensor. Grundlage
+  ist `sensor/persona/rootfs/Dockerfile`: gepinntes Debian-13-Image, Pakete vom
+  Debian-Snapshot `20260917T000000Z`, Konten, Verzeichnisse, honeyfs-Dateien
+  und Zeitstempel der Persona.
+- Das Skript exportiert das Dateisystem und legt leere Platzhalter für `/proc`,
+  `/sys` und `/dev` an. Dann führt es `createfs` aus dem gepinnten Cowrie-Image
+  per `chroot` aus. `fs.pickle` bleibt auf dem Sensor und kommt nicht ins Repo.
+- `sensor/persona/build.py` erzeugt aus den Quellen `prompt.template.md`,
+  `honeyfs/`, `txtcmds/` und `ps.txt` die Dateien `prompt.md`,
+  `cmdoutput.json` sowie die Ausgaben von `mount` und `lsmod`.
+- Feste Ausgaben für `df`, `dmesg`, `lscpu`, `nproc` und `top` stehen wörtlich
+  im Prompt. `mount` und `lsmod` beschreibt der Prompt als abgeleitet.
+
+**Begründung:**
+
+- Ohne eigenes Pickle sieht cowrie-a die Verzeichnisse der Persona nicht, und
+  Cowries Standard wirkt veraltet und widersprüchlich (Befund in `persona.md`).
+- Bei einem `chroot` ohne eingebundenes `/proc`, `/sys` und `/dev` gelangen
+  keine Daten des Sensors ins Pickle. `createfs` läuft dabei mit `/` als Wurzel,
+  sodass auch absolute Links erhalten bleiben.
+- Der Snapshot hält den Paketstand fest, damit spätere Neubauten zur Persona
+  passen.
+- Auf dem Sensor ist Docker schon installiert, lokal musst du nichts einrichten.
+  Das Pickle wird ohnehin nur dort geladen, deshalb entsteht kein zusätzliches
+  Vertrauensproblem.
+- Mit einem Generator und Tests kann `prompt.md` nicht unbemerkt von honeyfs und
+  den festen Ausgaben abweichen.
+
+**Konsequenzen:**
+
+- Der Prompt wächst auf rund 7.400 Tokens. Die Begründung aus E-015 gilt
+  unverändert.
+- Pakete legen Systemkonten mit anderen IDs an als die Persona. `remap-ids.sh`
+  gleicht sie an, damit `ls -l` in cowrie-a passende Namen zeigt.
+- Größen im Pickle stammen von echten Dateien. Große Caches beschreibt die
+  Persona deshalb nicht mit Zahlen, die `du` widerlegen würde.
+- Bau und `chroot` laufen auf dem Sensor in rund zwei Minuten durch, sobald die
+  Pakete im Build-Cache liegen. Das Pickle hat rund 33.800 Einträge (1,5 MB)
+  und keine Spuren von Docker.
+- Beim Bauen entstandene Zeitstempel setzt `build-fs-pickle.sh` auf die
+  Installation im Februar zurück, `/proc`, `/sys` und `/dev` auf den letzten
+  Boot. Sonst zeigt `ls -la /` einen frisch gebauten Server. Dateien und Ordner
+  aus honeyfs bekommen im Dockerfile feste Zeitstempel und hängen nicht von
+  lokalen Änderungszeiten ab.
+

@@ -1,0 +1,26 @@
+[    0.000000] Linux version 6.12.107+deb13-amd64 (debian-kernel@lists.debian.org) (x86_64-linux-gnu-gcc-14 (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP PREEMPT_DYNAMIC Debian 6.12.107-1 (2026-08-29)
+[    0.000000] Command line: BOOT_IMAGE=/boot/vmlinuz-6.12.107+deb13-amd64 root=PARTUUID=5d0f7c2e-8a41-4b6e-9f3d-2c7a1e9b4d60 ro console=tty0 console=ttyS0,115200 earlyprintk=ttyS0,115200 consoleblank=0 net.ifnames=0
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x00000000bffdcfff] usable
+[    0.000000] BIOS-e820: [mem 0x0000000100000000-0x000000013fffffff] usable
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] efi: EFI v2.7 by EDK II
+[    0.000000] DMI: QEMU Standard PC (i440FX + PIIX, 1996), BIOS 0.0.0 02/06/2015
+[    0.000000] Hypervisor detected: KVM
+[    0.000000] kvm-clock: using sched offset of 5213876402 cycles
+[    0.000003] tsc: Detected 2294.608 MHz processor
+[    0.004216] Memory: 3907548K/4193780K available (16384K kernel code, 2412K rwdata, 10212K rodata, 4196K init, 4344K bss, 248684K reserved, 0K cma-reserved)
+[    0.061420] smpboot: CPU0: Intel Common KVM processor (family: 0xf, model: 0x6, stepping: 0x1)
+[    0.198734] smp: Brought up 1 node, 2 CPUs
+[    0.402517] clocksource: Switched to clocksource kvm-clock
+[    0.951307] virtio_blk virtio1: 2/0/0 default/read/poll queues
+[    0.953862] virtio_blk virtio1: [vda] 83886080 512-byte logical blocks (42.9 GB/40.0 GiB)
+[    0.960114]  vda: vda1 vda14 vda15
+[    1.284451] EXT4-fs (vda1): mounted filesystem 3f1c6a2e-7b94-4d21-a8e5-0c6d9b2f4e17 ro with ordered data mode. Quota mode: none.
+[    1.612908] systemd[1]: systemd 257.13-1~deb13u1 running in system mode (+PAM +AUDIT +SELINUX +APPARMOR +IMA +IPE +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUPPLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF -XKBCOMMON -UTMP +SYSVINIT +LIBARCHIVE)
+[    1.613120] systemd[1]: Detected virtualization kvm.
+[    1.613131] systemd[1]: Detected architecture x86-64.
+[    1.618842] systemd[1]: Hostname set to <bld-ci-03>.
+[    2.074913] EXT4-fs (vda1): re-mounted 3f1c6a2e-7b94-4d21-a8e5-0c6d9b2f4e17 r/w.
+[    3.052671] audit: type=1400 audit(1788231748.519:2): apparmor="STATUS" operation="profile_load" profile="unconfined" name="lsb_release" pid=401 comm="apparmor_parser"
