@@ -74,14 +74,21 @@ Dort auslesen (der Wert gehört in keine Chat-Nachricht und in kein Repo):
 ssh globe 'sudo grep ^INGEST_TOKEN= /opt/honeypot-lab/.env'
 ```
 
-Auf dem Sensor eintragen, Rechte 600, Eigentümer root:
+Auf dem Sensor in `/srv/honeypot/.env` eintragen, Rechte 600, Eigentümer root.
+Der Befehl wartet auf die Eingabe: Zeile `INGEST_TOKEN=‹Wert›` einfügen, dann
+Strg-D:
 
 ```bash
 ssh -t hp-sensor 'sudo sh -c "umask 077; cat > /srv/honeypot/.env" && sudo chown root:root /srv/honeypot/.env && sudo chmod 600 /srv/honeypot/.env && sudo ls -l /srv/honeypot/.env'
 ```
 
-Der Befehl wartet auf die Eingabe: Zeile `INGEST_TOKEN=‹Wert›` einfügen, dann
-Strg-D. Danach zeigt er die Rechte an.
+Vector liest das Token nicht aus der Umgebung, sondern aus einer eigenen Datei
+(E-026). Sie entsteht aus der `.env`, ohne dass der Wert noch einmal getippt
+oder angezeigt wird:
+
+```bash
+ssh -t hp-sensor 'sudo sh -c ". /srv/honeypot/.env; umask 077; printf %s \"\$INGEST_TOKEN\" > /srv/honeypot/secrets/ingest_token" && sudo chown 999:999 /srv/honeypot/secrets/ingest_token && sudo chmod 0400 /srv/honeypot/secrets/ingest_token && sudo ls -l /srv/honeypot/secrets/'
+```
 
 **2. Verzeichnis für Vector anlegen** (legt `prepare-host.sh` mit an, der
 Aufruf ist gefahrlos wiederholbar):
@@ -109,6 +116,18 @@ Auf dem Hauptserver muss die Zahl der Ereignisse wachsen:
 
 ```bash
 ssh globe 'cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml exec -T db psql -U honeypot -d honeypot -c "SELECT count(*) AS ereignisse, count(DISTINCT cowrie_session) AS sitzungen FROM events;"'
+```
+
+### Wenn Vector Ereignisse verworfen hat
+
+Antwortet die API mit 401 oder 422, gilt der Versuch für Vector als endgültig
+gescheitert („Not retriable“): Die Ereignisse sind weg, und die Leseposition
+rückt trotzdem vor. Nach so einem Fehler den Positionsmerker löschen, damit
+Vector den Bestand noch einmal liest. Doppelte Ereignisse erkennt die API am
+Inhalts-Hash (E-024), es entstehen also keine Duplikate:
+
+```bash
+ssh hp-sensor 'cd /opt/honeypot-lab/sensor && sudo docker compose stop vector && sudo rm -rf /srv/honeypot/vector/* && sudo docker compose up -d vector'
 ```
 
 ## Test: Rotation und Neustart (Schritt 4.2)

@@ -42,7 +42,8 @@ bei der Übernahme ausformuliert.
 | E-022 | Fester HMAC-Schlüssel statt monatlicher Rotation            | angenommen                                     |
 | E-023 | Grundgerüst von API, Schema und Worker                      | angenommen                                     |
 | E-024 | Ingest: Prüfung, Idempotenz und Umgang mit Adressen         | angenommen                                     |
-| E-025 | Vector auf dem Sensor: Quelle, Stapel und Puffer            | angenommen                                     |
+| E-025 | Vector auf dem Sensor: Quelle, Stapel und Puffer            | angenommen, Token-Weg ersetzt durch E-026      |
+| E-026 | Ingest-Token über Vectors Secrets-Backend                   | angenommen                                     |
 
 ---
 
@@ -1018,7 +1019,7 @@ konstant. Es gibt keine Rotation. E-009 gilt unverändert weiter.
 
 ## E-025: Vector auf dem Sensor: Quelle, Stapel und Puffer
 
-- Status: angenommen
+- Status: angenommen, Token-Weg ersetzt durch E-026
 - Datum: 2026-09-18
 - Quelle: Schritt 4.2
 
@@ -1059,3 +1060,40 @@ konstant. Es gibt keine Rotation. E-009 gilt unverändert weiter.
 - Beim ersten Start liefert Vector den gesamten vorhandenen Bestand nach
   (`read_from: beginning`), auch unsere eigenen Testsitzungen. Sie sind an
   `127.0.0.1` erkennbar und werden in Schritt 7.1 ausgeschlossen.
+
+---
+
+## E-026: Ingest-Token über Vectors Secrets-Backend
+
+- Status: angenommen
+- Datum: 2026-09-18
+- Quelle: Schritt 4.2, Fehlersuche nach 401 beim ersten Start
+
+**Entscheidung:** Vector holt das Ingest-Token über den Secrets-Backend
+`directory` aus `/srv/honeypot/secrets/ingest_token` (Rechte 0400, Eigentümer
+999). In der Konfiguration steht `SECRET[lab.ingest_token]`. Der Container
+bekommt keine `env_file` mehr. Ersetzt den Weg über `${INGEST_TOKEN}` aus
+E-025.
+
+**Begründung:**
+
+- Vector 0.57 hat die automatische Ersetzung von `${VAR}` in der
+  Konfiguration entfernt. Vector schickte den Platzhalter deshalb wörtlich als
+  Token, und die API antwortete mit 401. Die Meldung im Log der API
+  (`laenge 15`, `sieht_aus_wie_platzhalter true`) hat das gezeigt.
+- Die angebotenen Wege sind `--dangerously-allow-env-var-interpolation`, ein
+  Vorverarbeiten mit envsubst oder der Secrets-Backend. Vector empfiehlt für
+  Zugangsdaten ausdrücklich den Secrets-Backend.
+- Nebeneffekt: Das Token steht nicht mehr in der Umgebung des Containers.
+  `docker inspect` und `/proc/1/environ` zeigen es damit nicht mehr.
+
+**Konsequenzen:**
+
+- `prepare-host.sh` legt `/srv/honeypot/secrets` an. Der Inhalt kommt von Hand,
+  abgeleitet aus `/srv/honeypot/.env`.
+- Ein falsches oder fehlendes Token führt bei Vector zu „Not retriable“: Die
+  Ereignisse werden **verworfen**, nicht erneut versucht, und die Leseposition
+  rückt trotzdem vor. Nach so einem Fehler muss der Positionsmerker in
+  `/srv/honeypot/vector` gelöscht werden, damit Vector den Bestand noch einmal
+  liest. Die Idempotenz der API (E-024) macht das gefahrlos.
+- Die API protokolliert bei 401 die Form des Headers, nie den Wert.

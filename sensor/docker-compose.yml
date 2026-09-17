@@ -68,9 +68,6 @@ services:
       options:
         max-size: 10m
         max-file: "3"
-    # Das Ingest-Token steht nur hier, nie im Repo und nie in der Konfiguration.
-    env_file:
-      - /srv/honeypot/.env
     environment:
       VECTOR_CONFIG: /etc/vector/vector.yaml
       # Begrenzt, wie oft Vector dieselbe eigene Meldung wiederholt. Ohne das
@@ -78,6 +75,9 @@ services:
       VECTOR_INTERNAL_LOG_RATE_LIMIT: "10"
     volumes:
       - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+      # Das Ingest-Token, eine Datei je Geheimnis. Nur lesend, und es steht
+      # damit nicht in der Umgebung des Containers.
+      - /srv/honeypot/secrets:/run/secrets/lab:ro
       # Nur die Logs, lesend. Host-Keys und fs.pickle sieht Vector nicht.
       - /srv/honeypot/a/var/log/cowrie:/srv/honeypot/a/var/log/cowrie:ro
       # Positionsmerker und Plattenpuffer.

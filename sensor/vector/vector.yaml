@@ -7,6 +7,16 @@
 
 data_dir: /var/lib/vector
 
+# Seit Vector 0.57 ersetzt Vector ${VAR} in der Konfiguration nicht mehr
+# selbst. Das Token kommt deshalb aus einer Datei: ein Verzeichnis, eine Datei
+# je Geheimnis, Dateiname gleich Name des Geheimnisses. Damit steht es auch
+# nicht mehr in der Umgebung des Containers.
+secret:
+  lab:
+    type: directory
+    path: /run/secrets/lab
+    remove_trailing_whitespace: true
+
 sources:
   cowrie:
     type: file
@@ -65,11 +75,11 @@ sinks:
       - aufbereiten
     uri: https://api.tomkaufmann.dev/ingest
     method: post
-    # Das Token kommt aus der Umgebung (/srv/honeypot/.env), nie aus dieser
-    # Datei. Fehlt es, startet Vector nicht.
+    # Das Token kommt aus /srv/honeypot/secrets/ingest_token, nie aus dieser
+    # Datei. Fehlt die Datei, startet Vector nicht.
     auth:
       strategy: bearer
-      token: ${INGEST_TOKEN}
+      token: "SECRET[lab.ingest_token]"
     encoding:
       codec: json
     # Ein Stapel geht als JSON-Array raus: Die einzelnen Ereignisse werden mit

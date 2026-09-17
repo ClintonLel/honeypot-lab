@@ -40,6 +40,10 @@ done
 # Container läuft mit derselben ID wie Cowrie und darf die Logs damit lesen.
 cowrie_dir 0700 "$ROOT/vector"
 
+# Geheimnisse für Vector, eine Datei je Geheimnis (Schritt 4.2). Der Inhalt
+# kommt nicht von hier, sondern wird von Hand angelegt, siehe README.
+cowrie_dir 0700 "$ROOT/secrets"
+
 # Gemeinsame Host-Keys, damit A und B vor dem Login gleich aussehen (E-002)
 cowrie_dir 0700 "$ROOT/hostkeys"
 for type in rsa ecdsa ed25519; do

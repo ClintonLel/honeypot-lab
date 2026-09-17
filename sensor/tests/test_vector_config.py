@@ -44,17 +44,24 @@ def compose() -> dict:
 # --- Secrets ----------------------------------------------------------------
 
 
-def test_the_token_is_only_a_placeholder():
+def test_the_token_is_only_a_reference():
     """Ohne YAML lesbar, damit dieser Test überall läuft."""
     text = read(CONFIG)
-    assert "${INGEST_TOKEN}" in text
+    assert "SECRET[lab.ingest_token]" in text
     # Ein echtes Token wäre 64 Hex-Zeichen lang.
     assert not any(len(word) >= 64 and all(c in "0123456789abcdef" for c in word) for word in text.split())
 
 
-def test_the_token_comes_from_the_env_file_on_the_host():
-    text = read(COMPOSE)
-    assert "/srv/honeypot/.env" in text
+def test_the_token_comes_from_a_file_on_the_host():
+    """Seit Vector 0.57 gibt es keine ${VAR}-Ersetzung mehr (E-026)."""
+    assert "/srv/honeypot/secrets:/run/secrets/lab:ro" in read(COMPOSE)
+
+
+def test_the_token_is_not_in_the_environment_of_the_container(compose):
+    """Was in der Umgebung steht, zeigt jedes docker inspect."""
+    service = compose["services"]["vector"]
+    assert "env_file" not in service
+    assert "INGEST_TOKEN" not in " ".join(f"{k}={v}" for k, v in service["environment"].items())
 
 
 # --- Grenzen passen zur Gegenseite ------------------------------------------
@@ -70,7 +77,7 @@ def test_the_sink_points_at_the_lab_api(config):
     sink = config["sinks"]["lab_api"]
     assert sink["uri"] == "https://api.tomkaufmann.dev/ingest"
     assert sink["method"] == "post"
-    assert sink["auth"] == {"strategy": "bearer", "token": "${INGEST_TOKEN}"}
+    assert sink["auth"] == {"strategy": "bearer", "token": "SECRET[lab.ingest_token]"}
 
 
 def test_a_batch_is_valid_json(config):
@@ -80,6 +87,13 @@ def test_a_batch_is_valid_json(config):
     assert sink["payload_prefix"] == "["
     assert sink["payload_suffix"] == "]"
     assert sink["framing"]["character_delimited"]["delimiter"] == ","
+
+
+def test_the_secret_backend_reads_the_mounted_directory(config, compose):
+    backend = config["secret"]["lab"]
+    assert backend["type"] == "directory"
+    mounts = compose["services"]["vector"]["volumes"]
+    assert any(mount.endswith(f"{backend['path']}:ro") for mount in mounts)
 
 
 # --- Keine Lücken, keine Duplikate ------------------------------------------
