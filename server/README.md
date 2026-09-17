@@ -122,10 +122,11 @@ cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml exec db
 Testlauf. Das Passwort kommt aus der `.env` und steht nicht in der Befehlszeile:
 
 ```bash
-sudo docker run --rm --network honeypot-lab_lab_internal --env-file /opt/honeypot-lab/.env -e ENVIRONMENT=test -e POSTGRES_HOST=db -e LAB_TEST_DATABASE=honeypot_test honeypot-lab-api:test pytest
+sudo docker run --rm --network honeypot-lab_lab_internal --env-file /opt/honeypot-lab/.env -e ENVIRONMENT=test -e POSTGRES_HOST=db -e LAB_TEST_DATABASE=honeypot_test honeypot-lab-api:test pytest -p no:cacheprovider
 ```
 
-Erwartet: alle Tests grün, nichts übersprungen.
+`-p no:cacheprovider`, weil `/app` im Image root gehört und der Container
+ohne Root läuft. Erwartet: alle Tests grün, nichts übersprungen.
 
 ## Prüfen
 
