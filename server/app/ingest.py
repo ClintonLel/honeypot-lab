@@ -68,7 +68,7 @@ def events_from(body: Any) -> list[Any]:
         return body
     if isinstance(body, dict) and isinstance(body.get("events"), list):
         return body["events"]
-    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Liste erwartet")
+    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Liste erwartet")
 
 
 async def upsert_session(
@@ -176,7 +176,7 @@ async def ingest(
     raw_events = events_from(body)
     if len(raw_events) > MAX_BATCH:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"höchstens {MAX_BATCH} Ereignisse je Anfrage",
         )
 
