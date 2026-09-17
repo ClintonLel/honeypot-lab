@@ -9,6 +9,10 @@ Beteiligten ersetzt:
   ``2001:db8::x``
 - die Adresse des Sensors (``dst_ip``) durch ``198.51.100.1``
 
+Private und Loopback-Adressen bleiben unverändert: Sie gehören niemandem
+außerhalb des Sensors, und an ``127.0.0.1`` sind später unsere eigenen
+Testsitzungen zu erkennen (Schritt 7.1).
+
 Ersetzt wird nicht nur das Feld, sondern jedes Vorkommen dieser Adressen in
 allen Werten, also auch in ``message`` oder in einem Befehl, den ein Angreifer
 mit seiner eigenen Adresse abgesetzt hat. Auf dem Laptop landet damit keine
@@ -32,7 +36,6 @@ import argparse
 import glob
 import ipaddress
 import json
-import re
 import sys
 from collections import Counter, defaultdict
 from typing import Any, Iterable
@@ -61,9 +64,8 @@ class AddressMap:
     def for_attacker(self, value: str) -> str:
         if value in self._map:
             return self._map[value]
-        try:
-            address = ipaddress.ip_address(value)
-        except ValueError:
+        address = self._public(value)
+        if address is None:
             return value
         if address.version == 4:
             replacement = str(ATTACKER_V4 + self._next_v4)
@@ -77,12 +79,25 @@ class AddressMap:
     def for_sensor(self, value: str) -> str:
         if value in self._map:
             return self._map[value]
-        try:
-            address = ipaddress.ip_address(value)
-        except ValueError:
+        address = self._public(value)
+        if address is None:
             return value
         self._map[value] = SENSOR_V4 if address.version == 4 else SENSOR_V6
         return self._map[value]
+
+    @staticmethod
+    def _public(value: str) -> ipaddress._BaseAddress | None:
+        """Gibt die Adresse zurück, wenn sie öffentlich ist, sonst None.
+
+        Loopback und private Adressen bleiben stehen: Sie gehören niemandem
+        außerhalb des Sensors, und an ``127.0.0.1`` erkennen wir später unsere
+        eigenen Testsitzungen (Schritt 7.1).
+        """
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            return None
+        return address if address.is_global else None
 
     def replace_everywhere(self, text: str) -> str:
         """Ersetzt alle bekannten Adressen, längste zuerst.
@@ -154,15 +169,17 @@ def pick_sessions(
 
 
 def anonymize(events: list[dict[str, Any]], addresses: AddressMap) -> list[dict[str, Any]]:
-    # Erst die Felder der Beteiligten einsammeln, damit die Karte vollständig
-    # ist, bevor irgendein Text ersetzt wird.
-    for event in events:
-        for field in SOURCE_FIELDS:
-            if isinstance(event.get(field), str):
-                addresses.for_attacker(event[field])
-        for field in SENSOR_FIELDS:
+    # Erst die Karte vollständig aufbauen, bevor irgendein Text ersetzt wird.
+    # Dabei erst die Adresse des Sensors, dann die der Angreifer: Träfe eine Adresse
+    # auf beide Rollen zu, soll sie als Sensor gelten.
+    for field in SENSOR_FIELDS:
+        for event in events:
             if isinstance(event.get(field), str):
                 addresses.for_sensor(event[field])
+    for field in SOURCE_FIELDS:
+        for event in events:
+            if isinstance(event.get(field), str):
+                addresses.for_attacker(event[field])
 
     cleaned: list[dict[str, Any]] = []
     for event in events:
