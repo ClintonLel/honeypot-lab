@@ -7,7 +7,7 @@ Fake-Shell von einem Sprachmodell gespielt wird (Cowrie-Backend "llm")
 statt von Cowries klassischer Shell?
 
 ## Architektur (verbindlich)
-- Sensor: Hetzner Cloud CX23, Ubuntu 24.04, eigenes Hetzner-Projekt.
+- Sensor: Hetzner Cloud CX23, Ubuntu 26.04, eigenes Hetzner-Projekt.
   - cowrie-a: klassische Shell, tcp:2222, sensor_name hp-a
   - cowrie-b: backend llm, tcp:2322, sensor_name hp-b
   - beide mit network_mode host; nftables verteilt Port 22 per jhash der Quell-IP

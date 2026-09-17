@@ -16,24 +16,30 @@ bei der Übernahme ausformuliert.
 
 ## Übersicht
 
-| Nr.   | Entscheidung                                              | Status     |
-|-------|-----------------------------------------------------------|------------|
-| E-001 | Sensor als eigener Hetzner-Server in eigenem Projekt      | angenommen |
-| E-002 | Zwei Cowrie-Varianten auf demselben Sensor                | angenommen |
-| E-003 | Cowrie-Container mit `network_mode: host`                 | angenommen |
-| E-004 | Zuteilung von Port 22 per nftables-jhash der Quell-IP     | angenommen |
-| E-005 | Vector liefert cowrie.json per HTTPS an /ingest           | angenommen |
-| E-006 | Komponenten auf dem bestehenden Hauptserver               | angenommen |
-| E-007 | Verbindungen nur vom Sensor zum Hauptserver               | angenommen |
-| E-008 | LLM-Zugriff nur über das Gateway auf dem Hauptserver      | angenommen |
-| E-009 | Quell-IPs anreichern, per HMAC hashen, Klartext verwerfen | angenommen |
-| E-010 | Technologie-Stack                                         | angenommen |
+| Nr.   | Entscheidung                                              | Status                                         |
+|-------|-----------------------------------------------------------|------------------------------------------------|
+| E-001 | Sensor als eigener Hetzner-Server in eigenem Projekt      | angenommen, Ubuntu-Version ersetzt durch E-012 |
+| E-002 | Zwei Cowrie-Varianten auf demselben Sensor                | angenommen                                     |
+| E-003 | Cowrie-Container mit `network_mode: host`                 | angenommen                                     |
+| E-004 | Zuteilung von Port 22 per nftables-jhash der Quell-IP     | angenommen                                     |
+| E-005 | Vector liefert cowrie.json per HTTPS an /ingest           | angenommen                                     |
+| E-006 | Komponenten auf dem bestehenden Hauptserver               | angenommen                                     |
+| E-007 | Verbindungen nur vom Sensor zum Hauptserver               | angenommen                                     |
+| E-008 | LLM-Zugriff nur über das Gateway auf dem Hauptserver      | angenommen                                     |
+| E-009 | Quell-IPs anreichern, per HMAC hashen, Klartext verwerfen | angenommen                                     |
+| E-010 | Technologie-Stack                                         | angenommen                                     |
+| E-011 | Grundeinrichtung des Sensors per cloud-init               | angenommen                                     |
+| E-012 | Ubuntu 26.04 statt 24.04 auf dem Sensor                   | angenommen                                     |
+| E-013 | Sensor-Infrastruktur mit OpenTofu                         | vorgeschlagen                                  |
+| E-014 | Persona bld-ci-03 für beide Varianten                     | angenommen                                     |
+| E-015 | Kein Banner vor dem Login, vollständiger Persona-Prompt   | angenommen                                     |
+| E-016 | Echte Downloads in cowrie-b über Cowries Download-Code    | vorgeschlagen                                  |
 
 ---
 
 ## E-001: Sensor als eigener Hetzner-Server in eigenem Projekt
 
-- Status: angenommen
+- Status: angenommen, Ubuntu-Version ersetzt durch E-012
 - Datum: 2026-09-17
 - Quelle: README.md, „Architektur (verbindlich)“
 
@@ -355,3 +361,260 @@ Globus-Komponente.
 
 - Image-Tags werden gepinnt, kein `:latest`. So ändern sich Sensor und Server
   während der Datenerhebung nicht unbemerkt.
+
+---
+
+## E-011: Grundeinrichtung des Sensors per cloud-init
+
+- Status: angenommen
+- Datum: 2026-09-17
+- Quelle: Vorgabe beim Anlegen von `infra/cloud-init.yaml`
+
+**Entscheidung:** Der Sensor wird beim ersten Start über
+`infra/cloud-init.yaml` eingerichtet:
+
+- Admin-User `tom` mit sudo und dem Public Key `hp_sensor.pub`
+- Admin-SSH auf Port 22022, nur per Key und nur für `tom`
+- Root- und Passwort-Login aus
+- unattended-upgrades aktiv
+- Docker Engine und Compose-Plugin aus dem offiziellen Docker-Repository
+- nftables installiert
+- Zeitzone UTC
+
+**Begründung:**
+
+- Die Einrichtung ist versioniert und läuft bei jedem Neuaufsetzen gleich ab
+  (E-001).
+- Port 22 gehört den Honeypots (E-004), deshalb läuft Admin-SSH auf 22022. Der
+  Server ist ab der ersten Minute Angriffen ausgesetzt. Deshalb gibt es nur
+  Key-Login und kein Passwort, das sich erraten ließe.
+- `tom` hat kein Passwort. sudo läuft deshalb ohne Passwortabfrage.
+- Das offizielle Docker-Repository ist der Installationsweg, den Docker selbst
+  dokumentiert. Engine und Compose-Plugin kommen dort aus derselben Quelle.
+- Mit UTC lassen sich die Zeitstempel von Sensor, Cowrie und Hauptserver ohne
+  Umrechnung vergleichen.
+- unattended-upgrades spielt Sicherheitsupdates des Betriebssystems ohne
+  manuellen Eingriff ein.
+
+**Konsequenzen:**
+
+- Ubuntu 26.04 (E-012) startet sshd standardmäßig über `ssh.socket`. Den Port
+  übernimmt dort ein systemd-Generator aus der sshd-Konfiguration, wirksam erst
+  nach `systemctl daemon-reload` und `systemctl restart ssh.socket`. Auf dem
+  ersten, von Hand eingerichteten Sensor lief sshd dagegen als `ssh.service`.
+  Das Skript prüft deshalb beim ersten Start, welcher Weg aktiv ist. Es meldet
+  einen Fehler, wenn 22022 nicht lauscht oder 22 belegt bleibt.
+- Wer den Key `hp_sensor` verliert, kommt nicht mehr per SSH auf den Server.
+  Dann bleibt nur das Hetzner-Rescue-System.
+- nftables ist installiert, hat aber noch kein Regelwerk. Die mitgelieferte
+  `/etc/nftables.conf` beginnt mit `flush ruleset` und würde beim Laden auch
+  Dockers Regeln löschen. Das eigene Regelwerk (E-004) muss das
+  berücksichtigen.
+- unattended-upgrades installiert standardmäßig nur Sicherheitsupdates aus den
+  Ubuntu-Quellen. Es aktualisiert Docker nicht und startet den Server nicht
+  neu. Docker-Updates und Neustarts nach Kernel-Updates bleiben manuell.
+
+---
+
+## E-012: Ubuntu 26.04 statt 24.04 auf dem Sensor
+
+- Status: angenommen
+- Datum: 2026-09-17
+- Quelle: Entscheidung nach der Prüfung des ersten, von Hand angelegten Sensors
+
+**Entscheidung:** Der Sensor läuft auf Ubuntu 26.04 LTS (resolute), Hetzner-Image
+`ubuntu-26.04`. Das ersetzt die Ubuntu-Version aus E-001. Alle anderen Teile
+von E-001 gelten weiter.
+
+**Begründung:**
+
+- Der erste Sensor lief bereits mit 26.04. Docker Engine aus dem offiziellen
+  Repository, Compose-Plugin, nftables und unattended-upgrades funktionierten
+  dort.
+- 26.04 ist ebenfalls eine LTS-Version und wird zwei Jahre länger unterstützt
+  als 24.04.
+- Cowrie und Vector laufen in Containern. Die Version des Host-Systems betrifft
+  sie kaum.
+
+**Konsequenzen:**
+
+- README.md und `infra/cloud-init.yaml` nennen 26.04.
+  Anleitungen, die 24.04 nennen, sind veraltet.
+- 26.04 ist jünger als 24.04, und Anleitungen für 24.04 passen nicht immer.
+  Zum Beispiel startete sshd auf dem ersten Sensor als `ssh.service` und nicht
+  über `ssh.socket` (E-011).
+
+---
+
+## E-013: Sensor-Infrastruktur mit OpenTofu
+
+- Status: vorgeschlagen, noch nicht entschieden
+- Datum: 2026-09-17
+- Quelle: Vorgabe beim Anlegen von `infra/*.tf`
+
+**Entscheidung:** OpenTofu baut Server, Firewall und SSH-Key des Sensors mit dem
+hcloud-Provider aus `infra/`. `tofu apply` baut `hp-sensor-01`, `tofu destroy`
+entfernt ihn wieder. `cloud-init.yaml` wird als User Data übergeben. Das
+Hetzner-API-Token kommt nur aus der Umgebungsvariable `HCLOUD_TOKEN`.
+
+**Begründung:**
+
+- Der erste Sensor wurde von Hand angelegt. Seine User Data war leer, seine
+  SSH-Konfiguration wich vom Repo ab, und in der Firewall fehlte zuerst die
+  Regel für 22022. Mit OpenTofu ist der ganze Aufbau im Repo beschrieben und
+  wiederholbar (E-001).
+- Die Firewall gehört zum Code. Sie hängt schon beim Anlegen am Server, es gibt
+  also kein Zeitfenster mit offenen Ports.
+- OpenTofu ist Open Source, der hcloud-Provider wird von Hetzner selbst
+  gepflegt.
+- Für das Token gibt es weder Variable noch Argument. So kann es nicht in
+  `*.tfvars`, im Repo oder im State landen.
+- Der Admin-Key wird auch als Hetzner-SSH-Key angelegt. Hetzner erzeugt dann
+  kein Root-Passwort, und das Rescue-System ist mit demselben Key erreichbar.
+  Der Key wird aus `cloud-init.yaml` gelesen und steht nur an dieser Stelle.
+
+**Konsequenzen:**
+
+- Eingehend erlaubt die Firewall nur ICMP, TCP 22 und TCP 22022. TCP 22022 ist
+  über `admin_source_ips` einschränkbar. 2222 und 2322 bleiben zu (E-004).
+  Ausgehender Verkehr ist nicht beschränkt. Ob das so bleibt, ist noch offen.
+- Jede Änderung an `cloud-init.yaml` baut den Server neu, und er bekommt eine
+  neue IP. Ob der Sensor für die Datenerhebung eine feste IP braucht
+  (Primary IP als eigene Ressource), ist offen.
+- Der State liegt nur lokal in `infra/` und wird nicht committet. Geht er
+  verloren, müssen die Ressourcen in der Console von Hand gelöscht werden.
+- Provider-Version (`~> 1.69`) und Prüfsummen sind über `.terraform.lock.hcl`
+  festgelegt, analog zur Regel „Image-Tags pinnen“.
+- Standort ist `nbg1`. Hetzner-Backups und Löschschutz sind aus, weil der
+  Sensor keine Daten hält, die nicht auch beim Hauptserver ankommen.
+
+---
+
+## E-014: Persona bld-ci-03 für beide Varianten
+
+- Status: angenommen
+- Datum: 2026-09-17
+- Quelle: Vorgabe beim Anlegen von `sensor/persona/`
+
+**Entscheidung:** Beide Varianten spielen denselben fiktiven CI-Build-Worker
+`bld-ci-03` mit Debian GNU/Linux 13.7. Die Maschine ist in
+`sensor/persona/persona.md` beschrieben. Die Dateiinhalte liegen in
+`sensor/persona/honeyfs/`, und `sensor/persona/prompt.md` enthält alle diese
+Dateien wörtlich als System-Prompt für cowrie-b.
+
+**Begründung:**
+
+- Die Forschungsfrage verlangt, dass sich die Varianten nur in der Shell
+  unterscheiden (E-002). Deshalb beschreiben eine Persona, ein Satz Dateien und
+  ein Prompt dieselben Fakten.
+- Die Standard-Persona von Cowrie (`svr04`, User `phil`) ist bekannt und in
+  sich widersprüchlich: Debian 12.5 an der Oberfläche, darunter Ausgaben von
+  2009 bis 2016.
+- Ein Build-Server ist ein plausibles, lohnendes Ziel und kommt ohne
+  Kundendaten, Web-Frontend oder Produktnamen aus.
+- Debian statt eines Firmen-Betriebssystems und erfundene Namen für
+  Organisation, Accounts, Domain und Agent erfüllen die Namensregel.
+  Technische Kennungen jeder Debian-VM bleiben als Ausnahme drin (Auslegung in
+  `persona.md`).
+- Hardware und Speicher entsprechen dem echten Sensor, weil Cowries `free` die
+  echten Werte des Hosts zeigt.
+
+**Konsequenzen:**
+
+- Eine Änderung an einer honeyfs-Datei muss im selben Commit auch in
+  `prompt.md` landen. Nach dem Start der Datenerhebung gilt jede Änderung für
+  beide Varianten gleichzeitig und wird mit Datum festgehalten.
+- Beide Container brauchen `contents_path`. `etc/issue.net` ist das Banner vor
+  dem Login und muss in beiden Varianten gleich sein.
+- In cowrie-a sind die Dateien unter `/opt`, `/srv` und `/home` erst sichtbar,
+  wenn es ein eigenes `fs.pickle` mit diesen Pfaden gibt.
+- Einige Unterschiede zwischen den Varianten legt Cowrie selbst fest, zum
+  Beispiel die Ausgabe nach dem Login, das Start-Verzeichnis, `w` und `wget`.
+  Sie sind in `persona.md` aufgelistet und gehören in die Methodik.
+- Die Namensregel gilt als erfüllt, solange die Abnahme von Schritt 2.1
+  erfüllt ist: `persona.md` beschreibt die Maschine vollständig, und honeyfs
+  und `prompt.md` passen zueinander.
+- Der Prompt hat rund 5.000 Tokens und geht bei jedem Befehl mit. Kosten und
+  Caching betreffen das LLM-Gateway (E-008).
+
+---
+
+## E-015: Kein Banner vor dem Login, vollständiger Persona-Prompt
+
+- Status: angenommen
+- Datum: 2026-09-17
+- Quelle: Entscheidung nach Schritt 2.1, vom User an Claude übertragen
+
+**Entscheidung:**
+
+- `etc/issue.net` bleibt leer, damit Cowrie vor dem Login kein Banner zeigt.
+- Nach dem Login zeigen beide Varianten die motd aus `etc/motd`, cowrie-b über
+  den Patch aus E-016. Kommt der Patch nicht, wird `etc/motd` auf genau
+  `Welcome to bld-ci-03` gesetzt. Das gibt cowrie-b fest aus.
+- `prompt.md` enthält weiterhin alle honeyfs-Dateien wörtlich (rund 4.900
+  Tokens pro Befehl).
+
+**Begründung:**
+
+- Ein echtes Debian zeigt standardmäßig kein Banner vor dem Login. Ein
+  Warnhinweis könnte gerade Menschen abschrecken, deren interaktive Sitzungen
+  für die Forschungsfrage am meisten zählen.
+- Was nach dem Login erscheint, sieht jede interaktive Sitzung sofort. Ein
+  Unterschied an dieser Stelle wäre ein offensichtliches Merkmal der Variante
+  (E-002).
+- Nur mit wörtlichem Inhalt liefert cowrie-b bei `cat` denselben Text wie
+  cowrie-a. Weglassen ist keine Option, weil cowrie-a dann wieder Cowries alte
+  Standardinhalte zeigt.
+- Der Prompt ist bis auf die angehängten Angaben gleichbleibend. Viele Anbieter
+  speichern so einen Anfang zwischen und berechnen ihn günstiger.
+
+**Konsequenzen:**
+
+- Das Gateway (Schritt 7.2) sollte das Zwischenspeichern beim Anbieter nutzen
+  und zwischengespeicherte Tokens in `llm_usage` mitloggen.
+- Mehr Prompt kann die Antwortzeit von cowrie-b erhöhen. Die Latenz wird
+  gemessen und in der Methodik berücksichtigt (H3).
+
+---
+
+## E-016: Echte Downloads in cowrie-b über Cowries eigenen Download-Code
+
+- Status: vorgeschlagen
+- Datum: 2026-09-17
+- Quelle: Wunsch des Users nach Schritt 2.1
+
+**Entscheidung:** Ein kleiner Patch am LLM-Backend von Cowrie erkennt `wget` und
+`curl` in den Befehlen von cowrie-b. Er lädt die Datei im Hintergrund wirklich
+herunter und schreibt dieselben Events wie cowrie-a
+(`cowrie.session.file_download`, `.failed`). Die Terminalausgabe liefert
+weiterhin das Sprachmodell. Derselbe Patch gibt nach dem Login `etc/motd` aus
+statt des fest eingebauten `Welcome to bld-ci-03`.
+
+**Begründung:**
+
+- Ohne Patch sammelt cowrie-b keine Malware-Proben. Das Artifact führt das in
+  Schritt 7.1 bisher als bekannte Grenze.
+- Cowrie 3.0.14 bündelt die Download-Logik in `cowrie/core/download.py`:
+  `fetch` mit Sperre für private und nicht routbare Adressen und
+  Weiterleitungsprüfung, `capture_download` und `report_download_failure`.
+  `capture_download` kommt ohne Fake-Dateisystem aus, wenn es keine Zieldatei
+  gibt. Der Patch kann also dieselben Grenzen und Events wie cowrie-a nutzen,
+  statt eigene zu bauen.
+- Die Alternativen sind schlechter. Ein Zusatzdienst, der die Logs von
+  cowrie-b ausliest, bräuchte eigenen Download-Code auf dem Sensor. Downloads
+  über das Gateway würden den Hauptserver mit Angreifer-Servern verbinden
+  (E-007).
+- In Cowrie gibt es dazu bisher weder Issue noch Pull Request. Der Patch eignet
+  sich als Beitrag ans Cowrie-Projekt.
+
+**Konsequenzen:**
+
+- cowrie-b läuft mit einem eigenen Image, das auf dem fest gepinnten
+  Cowrie-Image aufbaut und den Patch enthält. Beide Varianten nutzen dieselbe
+  Basisversion.
+- Zunächst nur `wget` und `curl`. Uploads per `scp -t` sowie `tftp` und
+  `ftpget` bleiben in cowrie-b simuliert und stehen als Grenze in der Methodik.
+- Download-Limit, Rate-Limits und eine spätere Ausgangssperre (Schritt 9.2)
+  gelten für beide Varianten gleich.
+- Die Umsetzung muss vor Schritt 7.1 stehen. Die Liste der Grenzen in
+  `docs/method.md` hängt davon ab.

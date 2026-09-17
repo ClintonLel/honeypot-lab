@@ -1,0 +1,114 @@
+#cloud-config
+#
+# Honeypot-Lab: Grundeinrichtung des Sensors
+# Hetzner Cloud CX23, Ubuntu 26.04 (siehe docs/decisions.md, E-011 und E-012)
+#
+# Beim Anlegen des Servers als User Data übergeben. Die Datei enthält keine
+# Secrets, nur den öffentlichen Schlüssel hp_sensor.pub.
+# Ausgabe und Fehler beim ersten Start: /var/log/cloud-init-output.log
+
+# --- Zeitzone -----------------------------------------------------------------
+timezone: Etc/UTC
+
+# --- Admin-User ---------------------------------------------------------------
+# Ohne "default" in der Liste legt cloud-init keinen Standard-User an.
+# tom hat kein Passwort (lock_passwd), deshalb sudo ohne Passwortabfrage.
+users:
+  - name: tom
+    shell: /bin/bash
+    groups: [sudo]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL2FKXZMsY191hTWZYSm+ELqeZgFz12kUcYrqIn6wjyN hp-sensor-01
+
+# --- SSH: Root- und Passwort-Login aus ----------------------------------------
+disable_root: true
+ssh_pwauth: false
+
+# --- Paketquelle: offizielles Docker-Repository -------------------------------
+# Schlüssel "Docker Release (CE deb)", per vollem Fingerprint importiert.
+apt:
+  sources:
+    docker:
+      source: "deb [signed-by=$KEY_FILE] https://download.docker.com/linux/ubuntu $RELEASE stable"
+      keyid: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+
+# --- Pakete -------------------------------------------------------------------
+package_update: true
+package_upgrade: true
+packages:
+  - unattended-upgrades
+  - nftables
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+
+# --- Dateien ------------------------------------------------------------------
+write_files:
+  # Admin-SSH auf 22022, nur per Key. Port 22 gehört den Honeypots (E-004).
+  # sshd nimmt für die meisten Optionen den ersten gefundenen Wert. Das Präfix
+  # 00- sorgt dafür, dass diese Datei vor den Drop-ins von cloud-init und dem
+  # Image gelesen wird.
+  - path: /etc/ssh/sshd_config.d/00-admin.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      Port 22022
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+      AuthenticationMethods publickey
+      AllowUsers tom
+
+  # Paketlisten täglich aktualisieren und unattended-upgrades ausführen.
+  # defer: erst nach der Paketinstallation schreiben, damit das Paket die
+  # Datei nicht überschreibt.
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root:root
+    permissions: "0644"
+    defer: true
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+
+# --- Befehle beim ersten Start ------------------------------------------------
+# Laufen am Ende des ersten Starts, nach Paketinstallation und write_files.
+runcmd:
+  - |
+    set -eu
+
+    # sshd -t braucht /run/sshd. Bei Socket-Aktivierung legt ssh.service das
+    # Verzeichnis sonst erst beim ersten Login an.
+    install -d -m 0755 /run/sshd
+
+    # Konfiguration prüfen, bevor der Port wechselt. Bei einem Fehler bricht
+    # das Skript hier ab, ohne SSH neu zu starten.
+    sshd -t
+
+    # Ubuntu 26.04 startet sshd standardmäßig über ssh.socket. Dann übernimmt
+    # ein systemd-Generator den Port aus sshd_config.d in ssh.socket, aber erst
+    # nach daemon-reload. Ob das Image das so macht, wird hier geprüft: Auf dem
+    # ersten, von Hand eingerichteten Sensor lief sshd als ssh.service.
+    if systemctl is-enabled --quiet ssh.socket; then
+      echo "SSH: Socket-Aktivierung über ssh.socket"
+      systemctl daemon-reload
+      systemctl restart ssh.socket
+    else
+      echo "SSH: klassischer Dienst ssh.service"
+      systemctl restart ssh.service
+    fi
+
+    # Ergebnis prüfen: 22022 muss lauschen, 22 muss frei sein.
+    if ! ss -Htln 'sport = :22022' | grep -q .; then
+      echo "FEHLER: SSH lauscht nicht auf Port 22022" >&2
+      exit 1
+    fi
+    if ss -Htln 'sport = :22' | grep -q .; then
+      echo "FEHLER: Port 22 ist noch belegt" >&2
+      exit 1
+    fi
+    echo "SSH: lauscht auf 22022, Port 22 ist frei"

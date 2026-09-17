@@ -1,0 +1,9 @@
+[user]
+	name = CI Build Agent
+	email = builder@bld-ci-03.build.internal
+[core]
+	autocrlf = input
+[safe]
+	directory = /srv/build/workspace/*
+[advice]
+	detachedHead = false

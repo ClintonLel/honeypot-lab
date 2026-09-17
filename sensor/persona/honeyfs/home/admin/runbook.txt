@@ -1,0 +1,22 @@
+bld-ci-03 runbook
+=================
+
+Agent
+- service ci-agent, runs as user builder
+- config: /opt/ci-agent/etc/agent.ini (managed, edit in config management)
+- restart after config change: sudo systemctl restart ci-agent
+- log: /var/log/ci-agent/agent.log
+
+Disk
+- /srv/build/cache grows fast
+- cron job build-cleanup removes workspaces older than 7 days every night at 02:30
+- if /srv is above 85 percent, clear /srv/build/cache/ccache first
+
+Artifacts
+- artifact-sync.timer runs every 15 minutes as user release
+- target: store-01.build.internal:/data/incoming/bld-ci-03/
+- ssh settings for the sync are in /home/release/.ssh/config
+
+Updates
+- unattended-upgrades is enabled
+- reboots for kernel updates: first Tuesday of the month, 03:00 UTC
