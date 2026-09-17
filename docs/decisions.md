@@ -37,6 +37,7 @@ bei der Übernahme ausformuliert.
 | E-017 | Cowrie-Konfiguration und Betrieb von cowrie-a              | angenommen                                     |
 | E-018 | Eigenes Dateisystem und erzeugte Persona-Dateien           | angenommen                                     |
 | E-019 | Port 22 per eigener nftables-Tabelle auf cowrie-a umleiten | angenommen                                     |
+| E-020 | Lab-Dienste auf dem Hauptserver neben der Webseite         | angenommen                                     |
 
 ---
 
@@ -777,4 +778,48 @@ liegt sie unter `/etc/nftables.d/honeypot.nft`, und
 - `sensor/tests/test_nftables.py` prüft, dass kein `flush ruleset` vorkommt,
   dass die Umleitung auf den Port von cowrie-a zeigt und dass die Unit die Regel
   lädt.
+
+---
+
+## E-020: Lab-Dienste auf dem Hauptserver neben der Webseite
+
+- Status: angenommen
+- Datum: 2026-09-17
+- Quelle: Schritt 3.1, `docs/server-inventory.md`, Entscheidung des Users für Variante A und rsync
+
+**Entscheidung:**
+
+- `db`, `api` und `worker` laufen als eigenes Compose-Projekt `honeypot-lab` in
+  `/opt/honeypot-lab` auf dem Hauptserver. Keiner der Dienste veröffentlicht
+  einen Port auf dem Host.
+- Netze: `lab_internal` (ohne Internet) für die Datenbank, `lab_edge` nur für
+  Caddy und API, `lab_egress` für den Worker.
+- Der vorhandene Caddy aus Website-Demo tritt `lab_edge` bei und bekommt einen
+  Block `api.{$DOMAIN}`. Die Änderung läuft per Pull Request in Website-Demo.
+- Speichergrenzen: `db` 768 MiB, `api` 384 MiB, `worker` 384 MiB. Dazu
+  niedrigere `cpu_shares` und ein höherer `oom_score_adj` als bei der
+  Webseite.
+- Übertragung vom Laptop per rsync.
+
+**Begründung:**
+
+- Docker umgeht ufw. Ohne veröffentlichte Ports entsteht kein Weg ins Lab an
+  Caddy vorbei.
+- Ein eigenes Netz statt `globe-demo_default` hält `gate` und das Lab getrennt.
+  `docker compose down` des einen Projekts blockiert das andere nicht.
+- `/opt/globe-demo` wird per Pipeline mit `git pull` aktualisiert. Direkte
+  Änderungen auf dem Server würden den nächsten Deploy gefährden.
+- 3,7 GiB RAM reichen für beides nur mit harten Grenzen, und die Webseite soll
+  Vorrang haben.
+
+**Konsequenzen:**
+
+- Reihenfolge für Schritt 3.2: DNS für `api` bei INWX, dann
+  `docker network create lab_edge` auf dem Server, dann Merge in Website-Demo.
+  Beim Merge baut die Pipeline Caddy einmal neu, die Webseite ist wenige
+  Sekunden weg.
+- Reine Caddyfile-Änderungen übernimmt die bestehende Pipeline nicht, sie
+  brauchen `docker compose restart caddy`.
+- Die Seite `/lab` (Schritt 5.2) liefert `gate` aus. Sie entsteht deshalb im
+  Repo Website-Demo.
 
