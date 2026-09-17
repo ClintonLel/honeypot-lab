@@ -1,11 +1,11 @@
 # Hauptserver: Bestandsaufnahme und Plan
 
-Stand: 2026-09-17 (Schritte 3.1 und 3.2). Grundlage sind die Ausgabe der Befehle
+Stand: 2026-09-18 (Schritte 3.1 bis 3.3). Grundlage sind die Ausgabe der Befehle
 aus dem Bauplan auf dem Hauptserver, das Repo `ClintonLel/Website-Demo` (Stand
-`main`) und die öffentlichen DNS-Einträge. Freigegeben ist Variante A mit rsync
-(siehe „Freigabe“). Umgesetzt ist bisher nur die Anbindung an Caddy (Schritt
-3.2, Pull Request `ClintonLel/Website-Demo#13`, gemerged am 2026-09-17 als
-`af1a81b`); die Lab-Dienste selbst folgen in Schritt 3.3.
+`main`) und die öffentlichen DNS-Einträge. Umgesetzt ist Variante A mit rsync:
+die Anbindung an Caddy (Schritt 3.2, Pull Request `ClintonLel/Website-Demo#13`,
+gemerged als `af1a81b`) und die Lab-Dienste selbst (Schritt 3.3). Die Ergebnisse
+stehen unten, der Plan davor beschreibt den Soll-Zustand.
 
 ## Bestandsaufnahme
 
