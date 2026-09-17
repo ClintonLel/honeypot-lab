@@ -16,26 +16,27 @@ bei der Übernahme ausformuliert.
 
 ## Übersicht
 
-| Nr.   | Entscheidung                                              | Status                                         |
-|-------|-----------------------------------------------------------|------------------------------------------------|
-| E-001 | Sensor als eigener Hetzner-Server in eigenem Projekt      | angenommen, Ubuntu-Version ersetzt durch E-012 |
-| E-002 | Zwei Cowrie-Varianten auf demselben Sensor                | angenommen                                     |
-| E-003 | Cowrie-Container mit `network_mode: host`                 | angenommen                                     |
-| E-004 | Zuteilung von Port 22 per nftables-jhash der Quell-IP     | angenommen                                     |
-| E-005 | Vector liefert cowrie.json per HTTPS an /ingest           | angenommen                                     |
-| E-006 | Komponenten auf dem bestehenden Hauptserver               | angenommen                                     |
-| E-007 | Verbindungen nur vom Sensor zum Hauptserver               | angenommen                                     |
-| E-008 | LLM-Zugriff nur über das Gateway auf dem Hauptserver      | angenommen                                     |
-| E-009 | Quell-IPs anreichern, per HMAC hashen, Klartext verwerfen | angenommen                                     |
-| E-010 | Technologie-Stack                                         | angenommen                                     |
-| E-011 | Grundeinrichtung des Sensors per cloud-init               | angenommen                                     |
-| E-012 | Ubuntu 26.04 statt 24.04 auf dem Sensor                   | angenommen                                     |
-| E-013 | Sensor-Infrastruktur mit OpenTofu                         | vorgeschlagen                                  |
-| E-014 | Persona bld-ci-03 für beide Varianten                     | angenommen                                     |
-| E-015 | Kein Banner vor dem Login, vollständiger Persona-Prompt   | angenommen                                     |
-| E-016 | Echte Downloads in cowrie-b über Cowries Download-Code    | vorgeschlagen                                  |
-| E-017 | Cowrie-Konfiguration und Betrieb von cowrie-a             | angenommen                                     |
-| E-018 | Eigenes Dateisystem und erzeugte Persona-Dateien          | angenommen                                     |
+| Nr.   | Entscheidung                                               | Status                                         |
+|-------|------------------------------------------------------------|------------------------------------------------|
+| E-001 | Sensor als eigener Hetzner-Server in eigenem Projekt       | angenommen, Ubuntu-Version ersetzt durch E-012 |
+| E-002 | Zwei Cowrie-Varianten auf demselben Sensor                 | angenommen                                     |
+| E-003 | Cowrie-Container mit `network_mode: host`                  | angenommen                                     |
+| E-004 | Zuteilung von Port 22 per nftables-jhash der Quell-IP      | angenommen                                     |
+| E-005 | Vector liefert cowrie.json per HTTPS an /ingest            | angenommen                                     |
+| E-006 | Komponenten auf dem bestehenden Hauptserver                | angenommen                                     |
+| E-007 | Verbindungen nur vom Sensor zum Hauptserver                | angenommen                                     |
+| E-008 | LLM-Zugriff nur über das Gateway auf dem Hauptserver       | angenommen                                     |
+| E-009 | Quell-IPs anreichern, per HMAC hashen, Klartext verwerfen  | angenommen                                     |
+| E-010 | Technologie-Stack                                          | angenommen                                     |
+| E-011 | Grundeinrichtung des Sensors per cloud-init                | angenommen                                     |
+| E-012 | Ubuntu 26.04 statt 24.04 auf dem Sensor                    | angenommen                                     |
+| E-013 | Sensor-Infrastruktur mit OpenTofu                          | vorgeschlagen                                  |
+| E-014 | Persona bld-ci-03 für beide Varianten                      | angenommen                                     |
+| E-015 | Kein Banner vor dem Login, vollständiger Persona-Prompt    | angenommen                                     |
+| E-016 | Echte Downloads in cowrie-b über Cowries Download-Code     | vorgeschlagen                                  |
+| E-017 | Cowrie-Konfiguration und Betrieb von cowrie-a              | angenommen                                     |
+| E-018 | Eigenes Dateisystem und erzeugte Persona-Dateien           | angenommen                                     |
+| E-019 | Port 22 per eigener nftables-Tabelle auf cowrie-a umleiten | angenommen                                     |
 
 ---
 
@@ -734,4 +735,46 @@ statt des fest eingebauten `Welcome to bld-ci-03`.
   Boot. Sonst zeigt `ls -la /` einen frisch gebauten Server. Dateien und Ordner
   aus honeyfs bekommen im Dockerfile feste Zeitstempel und hängen nicht von
   lokalen Änderungszeiten ab.
+
+---
+
+## E-019: Port 22 per eigener nftables-Tabelle auf cowrie-a umleiten
+
+- Status: angenommen
+- Datum: 2026-09-17
+- Quelle: Schritt 2.3 im Bauplan
+
+**Entscheidung:** Die Tabelle `ip honeypot` in `sensor/nftables/honeypot.nft`
+leitet eingehende TCP-Verbindungen auf Port 22 nach 2222 zu cowrie-a um. Sie
+hängt mit Priorität -110 (`dstnat - 10`) im Hook `prerouting`. Auf dem Sensor
+liegt sie unter `/etc/nftables.d/honeypot.nft`, und
+`honeypot-nftables.service` lädt sie beim Booten (oneshot, nach
+`network.target`). Die Umleitung gilt nur für IPv4.
+
+**Begründung:**
+
+- Die Tabelle ersetzt sich beim Laden selbst (`table`, `delete table`, neu
+  anlegen). Ohne `flush ruleset` bleiben Dockers Tabellen `ip nat` und
+  `ip filter` unberührt.
+- `nftables.service` bleibt aus. Dessen `/etc/nftables.conf` beginnt mit
+  `flush ruleset` (E-011). Eine eigene Unit lädt nur die eigene Datei, und
+  `systemctl stop` entfernt nur die eigene Tabelle.
+- REDIRECT ändert nur das Ziel. Cowrie sieht weiter die echte Quell-IP (E-003).
+- Der Bauplan (Schritt 1.4) sieht den Honeypot nur für IPv4 vor. Damit ist der
+  offene Punkt zu IPv6 aus E-004 vorerst beantwortet: Auf Port 22 über IPv6
+  lauscht nichts.
+
+**Konsequenzen:**
+
+- Getestet am 2026-09-17:
+  - Von außen landet `ssh root@195.201.127.108` in Cowrie, mit Honeypot-Host-Key,
+    Persona und `dst_port` 2222 im Log.
+  - Port 22022 bleibt erreichbar, Port 2222 ist von außen zu.
+  - Nach einem Neustart waren Regel, cowrie-a und Aufräum-Timer nach etwa 30
+    Sekunden wieder aktiv.
+- Schritt 7.4 ersetzt die Regel durch die Zuteilung per jhash auf cowrie-a und
+  cowrie-b.
+- `sensor/tests/test_nftables.py` prüft, dass kein `flush ruleset` vorkommt,
+  dass die Umleitung auf den Port von cowrie-a zeigt und dass die Unit die Regel
+  lädt.
 

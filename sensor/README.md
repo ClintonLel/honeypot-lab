@@ -1,7 +1,8 @@
 # sensor: Honeypots auf dem Sensor
 
-Stand Schritt 2.2: `cowrie-a` mit klassischer Shell. `cowrie-b`, nftables und
-Vector folgen in späteren Schritten.
+Stand Schritt 2.3: `cowrie-a` mit klassischer Shell, Port 22 wird per nftables
+auf `cowrie-a` umgeleitet. `cowrie-b`, die Zuteilung per Hash und Vector folgen in
+späteren Schritten.
 
 | Pfad im Repo                  | Inhalt                                                           |
 |-------------------------------|------------------------------------------------------------------|
@@ -12,7 +13,8 @@ Vector folgen in späteren Schritten.
 | `scripts/prepare-host.sh`     | Verzeichnisse und SSH-Host-Keys auf dem Sensor anlegen           |
 | `scripts/build-fs-pickle.sh`  | `fs.pickle` der Persona auf dem Sensor bauen                     |
 | `scripts/cleanup.sh`          | Rohlogs, Mitschnitte und Downloads nach 14 Tagen löschen         |
-| `systemd/`                    | Service und Timer für das Aufräumen                              |
+| `nftables/honeypot.nft`       | Umleitung von Port 22 auf `cowrie-a` (Schritt 2.3)               |
+| `systemd/`                    | Aufräumen (Service und Timer) und Laden der nftables-Regel       |
 | `tests/`                      | Prüfungen für Persona und Konfiguration                          |
 
 Auf dem Sensor liegt dieser Ordner unter `/opt/honeypot-lab/sensor` und gehört
@@ -175,10 +177,104 @@ Prompt angepasst werden:
 grep MemTotal /proc/meminfo
 ```
 
+## Port 22 umleiten (Schritt 2.3)
+
+Eine eigene nftables-Tabelle `ip honeypot` leitet eingehende Verbindungen auf
+Port 22 nach 2222 zu `cowrie-a` um. Die Tabelle ersetzt sich beim Laden selbst,
+`flush ruleset` kommt nicht vor, Dockers Regeln bleiben also unberührt.
+`nftables.service` bleibt aus, denn dessen `/etc/nftables.conf` würde alle Regeln
+löschen. Stattdessen lädt `honeypot-nftables.service` die Regel beim Booten.
+
+Einrichten auf dem Sensor, nach dem Übertragen von `sensor/`:
+
+```bash
+sudo nft -c -f /opt/honeypot-lab/sensor/nftables/honeypot.nft
+```
+
+```bash
+sudo install -d -m 0755 /etc/nftables.d
+```
+
+```bash
+sudo install -m 0644 /opt/honeypot-lab/sensor/nftables/honeypot.nft /etc/nftables.d/honeypot.nft
+```
+
+```bash
+sudo install -m 0644 /opt/honeypot-lab/sensor/systemd/honeypot-nftables.service /etc/systemd/system/
+```
+
+```bash
+sudo systemctl daemon-reload
+```
+
+```bash
+sudo systemctl enable --now honeypot-nftables.service
+```
+
+Nach einer Änderung an der Regel die Datei erneut nach `/etc/nftables.d/`
+kopieren und neu laden:
+
+```bash
+sudo systemctl reload honeypot-nftables.service
+```
+
+Umleitung vorübergehend abschalten. Das entfernt nur die Tabelle
+`ip honeypot`:
+
+```bash
+sudo systemctl stop honeypot-nftables.service
+```
+
+### Testanleitung (Abnahme Schritt 2.3)
+
+**1. Regel anzeigen** (auf dem Sensor). Erwartet wird die Kette `prerouting` mit
+`tcp dport 22 redirect to :2222`:
+
+```bash
+sudo nft list table ip honeypot
+```
+
+**2. Verbindung auf Port 22 von außen** (auf dem Laptop). Der Host-Key ist der
+Honeypot-Key aus `prepare-host.sh`, nicht der echte Key des Sensors. Er gehört
+deshalb nicht in `known_hosts`. Jedes Passwort außer `root` und `123456`
+funktioniert, danach erscheinen motd und Prompt `root@bld-ci-03:~#`:
+
+```bash
+ssh -o UserKnownHostsFile=/dev/null root@SENSOR_IP
+```
+
+Im Log muss die Sitzung mit `dst_port` 2222 und deiner eigenen IP als `src_ip`
+auftauchen (auf dem Sensor):
+
+```bash
+sudo tail -n 5 /srv/honeypot/a/var/log/cowrie/cowrie.json
+```
+
+**3. Admin-Zugang auf 22022 weiterhin erreichbar** (auf dem Laptop):
+
+```bash
+ssh -i ~/.ssh/hp_sensor -p 22022 tom@SENSOR_IP sudo nft list tables
+```
+
+**4. Verhalten nach einem Neustart.** Sensor neu starten:
+
+```bash
+ssh -i ~/.ssh/hp_sensor -p 22022 tom@SENSOR_IP sudo systemctl reboot
+```
+
+Nach etwa 30 Sekunden müssen Unit und Container wieder laufen:
+
+```bash
+ssh -i ~/.ssh/hp_sensor -p 22022 tom@SENSOR_IP "systemctl is-active honeypot-nftables.service; sudo docker ps --format '{{.Names}} {{.Status}}'"
+```
+
+Danach Test 1 bis 3 wiederholen.
+
 ## Hinweise
 
-- **Port 2222:** Er ist von außen nicht erreichbar, weil die Hetzner-Firewall
-  ihn nicht öffnet. Die Umleitung von Port 22 folgt in Schritt 2.3.
+- **Port 2222:** Er ist von außen nicht direkt erreichbar, weil die
+  Hetzner-Firewall ihn nicht öffnet. Angreifer erreichen Cowrie nur über die
+  Umleitung von Port 22.
 - **Schreibgeschütztes Dateisystem:** `cowrie-a` läuft mit `read_only: true`.
   Bricht der Start mit einem Fehler zu einem schreibgeschützten Pfad ab, zeig mir
   die Ausgabe von `docker compose logs`.
@@ -194,5 +290,7 @@ grep MemTotal /proc/meminfo
   `head -n 4`. Beim Testen deshalb die lange Form nutzen.
 - **Erster Test am 2026-09-17:** Login, Persona, Logins, exec mit dem
   OpenSSH-Client, wachsendes `cowrie.json` und Aufräum-Timer waren in Ordnung.
+  Nach Schritt 2.3 landete `ssh root@SENSOR_IP` von außen in Cowrie, auch nach
+  einem Neustart. Port 22022 blieb erreichbar, und Port 2222 war von außen zu.
   paramiko meldet bei exec „Channel closed“, weil Cowrie den Kanal vor der
   Bestätigung schließt. OpenSSH stört das nicht.
