@@ -39,6 +39,8 @@ bei der Übernahme ausformuliert.
 | E-019 | Port 22 per eigener nftables-Tabelle auf cowrie-a umleiten | angenommen                                     |
 | E-020 | Lab-Dienste auf dem Hauptserver neben der Webseite         | angenommen                                     |
 | E-021 | Caddy-Block für die Lab-API auf `api.tomkaufmann.dev`      | angenommen                                     |
+| E-022 | Fester HMAC-Schlüssel statt monatlicher Rotation            | angenommen                                     |
+| E-023 | Grundgerüst von API, Schema und Worker                      | angenommen                                     |
 
 ---
 
@@ -868,3 +870,91 @@ liegt sie unter `/etc/nftables.d/honeypot.nft`, und
   Pfad mit Streaming braucht einen eigenen `handle` mit `flush_interval -1`.
 - Bis das Lab läuft, antwortet `api.tomkaufmann.dev` mit 502, hat aber schon ein
   gültiges Zertifikat.
+
+---
+
+## E-022: Fester HMAC-Schlüssel statt monatlicher Rotation
+
+- Status: angenommen
+- Datum: 2026-09-17
+- Quelle: Schritt 3.3, Entscheidung des Users. Weicht bewusst vom Bauplan ab,
+  der dort einen „monatlich rotierenden Schlüssel“ verlangt.
+
+**Entscheidung:** `IP_HMAC_KEY` bleibt über die gesamte Laufzeit der Studie
+konstant. Es gibt keine Rotation. E-009 gilt unverändert weiter.
+
+**Begründung:**
+
+- Ohne Klartext-IP lässt sich ein Hash nach einem Schlüsselwechsel nicht neu
+  berechnen. Wiederkehrende Angreifer, die Zuordnung zu Kampagnen (Schritt 6.2)
+  und der Vergleich der Varianten über die Laufzeit (Phase 7) brechen damit
+  genau an der Stelle, an der die Auswertung ansetzt.
+- Die geprüfte Alternative wäre eine stabile `actor_id` gewesen, die beim
+  Ingest über den vorherigen Schlüssel weitergereicht wird. Sie verzerrt aber
+  die Kennzahl „wiederkehrende Angreifer“ systematisch: Wer länger pausiert als
+  eine Rotationsperiode, zählt als neuer Akteur.
+- Der Schlüssel liegt auf demselben Host wie die Datenbank. Wer ihn erbeutet,
+  hat in aller Regel auch die Daten. Die Rotation hätte also weniger geschützt,
+  als sie an Auswertbarkeit gekostet hätte.
+
+**Konsequenzen:**
+
+- Kompensation statt Rotation: mindestens 32 zufällige Bytes, nur in
+  `/opt/honeypot-lab/.env` (Rechte 600, Eigentümer root), nie in Logs, nie in
+  Beispielen. Roh-Events werden nach 90 Tagen gelöscht (Schritt 4.3), danach
+  existieren Hashes nur noch in `sessions` und `campaigns`.
+- Ein Test stellt sicher, dass keine Tabelle eine Klartext-IP aufnehmen kann.
+- Soll später doch rotiert werden, braucht das eine neue Entscheidung, eine
+  Spalte `actor_id` und eine Migration. Ein stiller Wechsel des Schlüssels
+  macht alte und neue Hashes unvergleichbar.
+- `docs/method.md` beschreibt das Verfahren ohne Rotation.
+
+---
+
+## E-023: Grundgerüst von API, Schema und Worker
+
+- Status: angenommen
+- Datum: 2026-09-17
+- Quelle: Schritt 3.3
+
+**Entscheidung:**
+
+- **Asynchron mit psycopg 3.** FastAPI, SQLAlchemy 2 und Alembic laufen über
+  `postgresql+psycopg`. Derselbe Treiber bedient synchrone und asynchrone
+  Verbindungen, es ist also nur einer im Image.
+- **Die App ist eine Factory** (`app.main:create_app --factory`). Der Import
+  des Moduls liest keine Einstellungen.
+- **Kein Access-Log von Uvicorn** (`--no-access-log`). Es enthielte die Adresse
+  jedes Clients. Stattdessen loggt eine eigene Middleware Methode, Pfad, Status
+  und Dauer als JSON.
+- **Kein CORS in der Anwendung.** Das macht Caddy (E-021).
+- **Keine öffentliche Schema-Seite** im Betrieb: `/docs` und `/openapi.json`
+  sind aus, solange `ENVIRONMENT=production`.
+- **Start bricht ab**, wenn `POSTGRES_PASSWORD`, `IP_HMAC_KEY` oder
+  `INGEST_TOKEN` fehlen, zu kurz sind oder noch `CHANGE_ME` enthalten.
+- **`daily_stats` ist schmal:** `(tag, variante, metrik, dimension) -> wert`.
+- **`events.dedup_hash` ist eindeutig**, das trägt die Idempotenz in 4.1.
+- **Tests in zwei Stufen:** ohne Datenbank überall, mit Datenbank im Container
+  gegen eine eigene Datenbank `honeypot_test`.
+
+**Begründung:**
+
+- Die Regeln aus README.md („keine Klartext-IPs ausgeben“) greifen nur, wenn
+  auch das Logging sie einhält. Uvicorns Access-Log wäre die einfachste Lücke.
+- Ein fehlender Schlüssel darf nicht dazu führen, dass die API mit einem
+  Standardwert weiterläuft und stillschweigend falsche Hashes schreibt.
+- Eine schmale Statistik-Tabelle spart Migrationen: Für jede neue Kennzahl in
+  Phase 5 und 6 kommt eine Zeile dazu, keine Spalte.
+- Die Datenbanktests fahren das Schema hoch und wieder herunter. Sie brauchen
+  deshalb eine eigene Datenbank, sonst wären die erhobenen Daten weg.
+
+**Konsequenzen:**
+
+- `server/tests/test_schema.py` lehnt jede Spalte ab, deren Name nach einer
+  Adresse aussieht, und jeden Postgres-Typ `inet` oder `cidr`. Neue Tabellen
+  müssen daran vorbei.
+- Das Laufzeit-Image enthält kein pytest. Tests laufen über das Build-Ziel
+  `test` im Dockerfile.
+- Die Testdatenbank `honeypot_test` muss auf dem Server existieren.
+- Lokal läuft eine andere Python-Version als im Container. Maßgeblich ist der
+  Lauf im Container (E-010).

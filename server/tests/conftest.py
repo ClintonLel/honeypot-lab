@@ -1,0 +1,80 @@
+"""Gemeinsame Fixtures.
+
+Tests laufen in zwei Stufen:
+
+- ohne Datenbank: überall dort, wo nur Code geprüft wird. Diese Tests laufen
+  auf dem Laptop.
+- mit Datenbank (Marker ``db``): Migration und Round-Trip gegen ein echtes
+  PostgreSQL. Sie laufen im Container auf dem Hauptserver, siehe
+  ``server/README.md``. Ohne ``LAB_TEST_DATABASE_URL`` werden sie übersprungen.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.config import Settings, get_settings  # noqa: E402
+
+# Nur für Tests. Echte Secrets stehen ausschließlich in der .env auf dem Server.
+TEST_SECRET = "t" * 64
+
+
+@pytest.fixture
+def settings() -> Settings:
+    return Settings(
+        environment="test",
+        postgres_password=TEST_SECRET,
+        ip_hmac_key=TEST_SECRET,
+        ingest_token=TEST_SECRET,
+    )
+
+
+@pytest.fixture
+def app_client(settings: Settings) -> Iterator["TestClient"]:
+    """FastAPI-App mit Test-Einstellungen, ohne echte Datenbank."""
+    from fastapi.testclient import TestClient
+
+    get_settings.cache_clear()
+    for key, value in {
+        "ENVIRONMENT": "test",
+        "POSTGRES_PASSWORD": TEST_SECRET,
+        "IP_HMAC_KEY": TEST_SECRET,
+        "INGEST_TOKEN": TEST_SECRET,
+    }.items():
+        os.environ[key] = value
+
+    from app.main import create_app
+
+    app = create_app()
+    # Die Verbindung zur Datenbank ersetzt jeder Test selbst.
+    with TestClient(app) as client:
+        yield client
+
+    get_settings.cache_clear()
+
+
+@pytest.fixture(scope="session")
+def database_url() -> str:
+    """Verbindung für die Datenbanktests.
+
+    Entweder vollständig als ``LAB_TEST_DATABASE_URL`` oder nur als Name der
+    Testdatenbank in ``LAB_TEST_DATABASE``. Der zweite Weg baut die URL aus den
+    üblichen ``POSTGRES_*``-Variablen, damit kein Passwort in der Befehlszeile
+    und damit in der Prozessliste steht.
+    """
+    url = os.environ.get("LAB_TEST_DATABASE_URL", "")
+    if url:
+        return url
+
+    name = os.environ.get("LAB_TEST_DATABASE", "")
+    if name:
+        return Settings(environment="test", postgres_db=name).database_url
+
+    pytest.skip("LAB_TEST_DATABASE_URL oder LAB_TEST_DATABASE nicht gesetzt")

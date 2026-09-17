@@ -1,0 +1,11 @@
+# Laufzeit-Abhängigkeiten der Lab-API und des Workers.
+# Versionen sind exakt gepinnt, damit sich während der Datenerhebung nichts
+# unbemerkt ändert (E-010).
+
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+sqlalchemy[asyncio]==2.0.54
+# psycopg 3 bedient synchrone und asynchrone Verbindungen.
+psycopg[binary]==3.3.5
+alembic==1.20.0
+pydantic-settings==2.15.0
