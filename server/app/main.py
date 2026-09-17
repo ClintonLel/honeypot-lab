@@ -26,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory
+from app.enrichment import Enricher
+from app.ingest import router as ingest_router
 from app.logging import configure_logging
 
 logger = logging.getLogger("lab.api")
@@ -65,10 +67,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
+    app.state.enricher = Enricher(settings.ipinfo_db_path)
     logger.info("api gestartet", extra={"environment": settings.environment})
     try:
         yield
     finally:
+        app.state.enricher.close()
         await engine.dispose()
         logger.info("api beendet")
 
@@ -103,4 +107,5 @@ def create_app() -> FastAPI:
         return response
 
     app.include_router(router)
+    app.include_router(ingest_router)
     return app

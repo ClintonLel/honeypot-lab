@@ -10,6 +10,10 @@ die API über Caddy erreichbar (E-021).
 | Pfad                        | Inhalt                                                     |
 |-----------------------------|------------------------------------------------------------|
 | `app/main.py`               | FastAPI-App, `GET /health`, Anfrage-Log ohne Adressen       |
+| `app/ingest.py`             | `POST /ingest`: Token, Prüfung, Idempotenz, Sitzungen       |
+| `app/events.py`             | Ereignisse prüfen, Adressen entfernen, Felder ziehen        |
+| `app/defang.py`             | URLs und Adressen entschärfen (hxxp, [.])                  |
+| `app/enrichment.py`         | Land und Netzbetreiber aus der IPinfo-Lite-Datenbank        |
 | `app/config.py`             | Einstellungen aus Umgebungsvariablen, Secrets als `SecretStr` |
 | `app/db.py`                 | Engine und Sessions (SQLAlchemy 2, psycopg 3, asynchron)    |
 | `app/models.py`             | die sieben Tabellen aus Schritt 3.3                        |
@@ -133,6 +137,15 @@ ohne Root läuft. Erwartet: alle Tests grün, nichts übersprungen.
 ```bash
 curl -sS -o /dev/null -w 'HTTP %{http_code}\n' https://api.tomkaufmann.dev/health
 ```
+
+Der Ingest muss ohne Token ablehnen:
+
+```bash
+curl -sS -o /dev/null -w 'HTTP %{http_code}\n' -X POST -H 'Content-Type: application/json' -d '[]' https://api.tomkaufmann.dev/ingest
+```
+
+Erwartet: `401`. Mit gültigem Token antwortet er mit Zählern für angenommene,
+doppelte und abgelehnte Ereignisse; den Weg dorthin baut Vector in Schritt 4.2.
 
 ```bash
 curl -sS https://api.tomkaufmann.dev/health

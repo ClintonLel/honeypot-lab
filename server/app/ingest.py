@@ -1,0 +1,245 @@
+"""POST /ingest: Ereignisse vom Sensor annehmen.
+
+Der Sensor weist sich mit einem Bearer-Token aus (``INGEST_TOKEN``). Jede Zeile
+wird einzeln geprüft; eine kaputte Zeile wirft nicht den ganzen Stapel weg,
+sondern wird gezählt und gemeldet. Doppelt gelieferte Zeilen erkennt ein
+eindeutiger Index auf ``events.dedup_hash``: Vector darf nach einem Neustart
+gefahrlos noch einmal senden (Schritt 4.2).
+
+Reihenfolge je Ereignis: prüfen, anreichern, Quell-IP hashen, Klartext
+verwerfen, speichern (E-009).
+"""
+
+from __future__ import annotations
+
+import hmac
+import logging
+from hashlib import sha256
+from collections import Counter
+from typing import Any
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import Settings
+from app.enrichment import Enricher, Origin
+from app.events import MAX_BATCH, EventRejected, NormalizedEvent, normalize
+from app.hashing import hash_ip
+from app.models import Command, Event, Session
+
+logger = logging.getLogger("lab.ingest")
+router = APIRouter()
+
+bearer = HTTPBearer(auto_error=False)
+
+
+def settings_of(request: Request) -> Settings:
+    return request.app.state.settings
+
+
+async def require_sensor_token(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+) -> None:
+    """Prüft das Bearer-Token des Sensors in konstanter Zeit."""
+    expected = settings_of(request).ingest_token.get_secret_value()
+    given = credentials.credentials if credentials else ""
+    if not expected or not hmac.compare_digest(given, expected):
+        # Kein Hinweis darauf, ob das Token fehlte oder falsch war.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="nicht berechtigt")
+
+
+async def db_session(request: Request) -> Any:
+    factory = request.app.state.session_factory
+    async with factory() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+
+
+def events_from(body: Any) -> list[Any]:
+    """Nimmt eine Liste oder ein Objekt mit ``events`` entgegen."""
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict) and isinstance(body.get("events"), list):
+        return body["events"]
+    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Liste erwartet")
+
+
+async def upsert_session(
+    db: AsyncSession, event: NormalizedEvent, ip_hash: str | None, origin: Origin
+) -> int | None:
+    """Legt die Sitzung an oder ergänzt sie. Gibt die interne ID zurück."""
+    if ip_hash is None:
+        # Ohne Herkunft lässt sich keine Sitzung anlegen, ip_hash ist Pflicht.
+        return await db.scalar(
+            select(Session.id).where(Session.cowrie_session == event.cowrie_session)
+        )
+
+    statement = insert(Session).values(
+        cowrie_session=event.cowrie_session,
+        variant=event.variant,
+        sensor_name=event.sensor,
+        ip_hash=ip_hash,
+        country=origin.country,
+        asn=origin.asn,
+        as_name=origin.as_name,
+        started_at=event.occurred_at,
+    )
+    statement = statement.on_conflict_do_update(
+        constraint="uq_sessions_cowrie_session",
+        set_={
+            # Vorhandene Werte bleiben stehen, fehlende werden ergänzt.
+            "country": func.coalesce(Session.country, statement.excluded.country),
+            "asn": func.coalesce(Session.asn, statement.excluded.asn),
+            "as_name": func.coalesce(Session.as_name, statement.excluded.as_name),
+            # Der Anfang ist das früheste Ereignis, auch wenn der Stapel
+            # unsortiert ankommt.
+            "started_at": func.least(Session.started_at, statement.excluded.started_at),
+        },
+    ).returning(Session.id)
+    return await db.scalar(statement)
+
+
+async def apply_event(db: AsyncSession, event: NormalizedEvent, session_id: int) -> None:
+    """Schreibt die Felder des Ereignisses in die Sitzung."""
+    fields = event.fields
+    changes: dict[str, Any] = {}
+
+    if event.eventid == "cowrie.client.version" and fields.get("version"):
+        changes["client_version"] = fields["version"]
+    elif event.eventid == "cowrie.client.kex" and fields.get("hassh"):
+        changes["hassh"] = fields["hassh"]
+    elif event.eventid == "cowrie.client.size":
+        # Wer eine Terminalgröße meldet, hat ein Pseudoterminal angefordert.
+        # Das ist das Merkmal für eine interaktive Sitzung.
+        changes["interactive"] = True
+    elif event.eventid == "cowrie.login.success":
+        changes["login_username"] = fields.get("username")
+        changes["login_password"] = fields.get("password")
+    elif event.eventid == "cowrie.login.failed":
+        # Nur, solange kein erfolgreicher Login die Felder gefüllt hat.
+        await db.execute(
+            update(Session)
+            .where(Session.id == session_id, Session.login_username.is_(None))
+            .values(login_username=fields.get("username"), login_password=fields.get("password"))
+        )
+    elif event.eventid == "cowrie.session.closed":
+        changes["ended_at"] = event.occurred_at
+        if "duration_ms" in fields:
+            changes["duration_ms"] = fields["duration_ms"]
+
+    if changes:
+        await db.execute(update(Session).where(Session.id == session_id).values(**changes))
+
+
+async def add_command(db: AsyncSession, event: NormalizedEvent, session_id: int) -> None:
+    """Hängt einen Befehl an die Sitzung und zählt ihn."""
+    text = event.fields.get("input") or ""
+    sequence = await db.scalar(
+        update(Session)
+        .where(Session.id == session_id)
+        .values(command_count=Session.command_count + 1)
+        .returning(Session.command_count)
+    )
+    # Ohne Terminalgröße ist es ein Exec-Aufruf. Kommt später doch eine
+    # Größe, setzt das Ereignis interactive auf true.
+    await db.execute(
+        update(Session)
+        .where(Session.id == session_id, Session.interactive.is_(None))
+        .values(interactive=False)
+    )
+    await db.execute(
+        insert(Command)
+        .values(
+            session_id=session_id,
+            sequence=sequence or 1,
+            occurred_at=event.occurred_at,
+            command=text,
+            command_hash=sha256(text.encode("utf-8")).hexdigest(),
+        )
+        .on_conflict_do_nothing(constraint="uq_commands_session_sequence")
+    )
+
+
+@router.post("/ingest", dependencies=[Depends(require_sensor_token)])
+async def ingest(
+    request: Request,
+    body: Any = Body(...),
+    db: AsyncSession = Depends(db_session),
+) -> dict[str, Any]:
+    raw_events = events_from(body)
+    if len(raw_events) > MAX_BATCH:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"höchstens {MAX_BATCH} Ereignisse je Anfrage",
+        )
+
+    settings: Settings = settings_of(request)
+    enricher: Enricher = request.app.state.enricher
+    key = settings.ip_hmac_key_bytes
+
+    accepted = duplicates = 0
+    rejected: Counter[str] = Counter()
+
+    for raw in raw_events:
+        try:
+            event = normalize(raw)
+        except EventRejected as exc:
+            rejected[exc.reason] += 1
+            continue
+
+        # Anreichern, hashen, Klartext vergessen.
+        origin = enricher.lookup(event.source_address)
+        ip_hash = hash_ip(event.source_address, key) if event.source_address else None
+        # Ab hier existiert die Adresse nirgends mehr: payload ist ohne sie
+        # entstanden, gespeichert wird nur der Hash.
+
+        session_id = await upsert_session(db, event, ip_hash, origin)
+
+        inserted = await db.scalar(
+            insert(Event)
+            .values(
+                dedup_hash=event.dedup_hash,
+                session_id=session_id,
+                cowrie_session=event.cowrie_session,
+                eventid=event.eventid,
+                variant=event.variant,
+                occurred_at=event.occurred_at,
+                payload=event.payload,
+            )
+            .on_conflict_do_nothing(constraint="uq_events_dedup_hash")
+            .returning(Event.id)
+        )
+        if inserted is None:
+            duplicates += 1
+            continue
+
+        if session_id is not None:
+            await apply_event(db, event, session_id)
+            if event.eventid == "cowrie.command.input":
+                await add_command(db, event, session_id)
+        accepted += 1
+
+    await db.commit()
+
+    logger.info(
+        "ingest",
+        extra={
+            "accepted": accepted,
+            "duplicates": duplicates,
+            "rejected": sum(rejected.values()),
+            "reasons": dict(rejected),
+        },
+    )
+    return {
+        "accepted": accepted,
+        "duplicates": duplicates,
+        "rejected": sum(rejected.values()),
+        "reasons": dict(rejected),
+    }

@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     llm_gateway_token: SecretStr = SecretStr("")
     ipinfo_token: SecretStr = SecretStr("")
 
+    # Pfad zur IPinfo-Lite-Datenbank. Der Worker legt sie dort ab
+    # (Schritt 4.3), die API liest sie nur.
+    ipinfo_db_path: str = "/data/ipinfo.mmdb"
+
     # Nur für Tests und lokale Läufe interessant.
     sql_echo: bool = Field(default=False)
 

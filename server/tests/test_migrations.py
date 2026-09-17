@@ -13,41 +13,17 @@ Ohne ``LAB_TEST_DATABASE_URL`` überspringt pytest sie.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
-from alembic.config import Config
 from alembic.migration import MigrationContext
 from sqlalchemy import create_engine, inspect, select
 
 from app.models import Base, Session
+from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
-
-SERVER_DIR = Path(__file__).resolve().parents[1]
-
-
-def alembic_config(url: str) -> Config:
-    config = Config(str(SERVER_DIR / "alembic.ini"))
-    config.set_main_option("script_location", str(SERVER_DIR / "app" / "migrations"))
-    # psycopg 3 bedient sync und async, die URL passt für beides.
-    config.set_main_option("sqlalchemy.url", url)
-    return config
-
-
-@pytest.fixture
-def migrated(database_url: str):
-    """Fährt das Schema hoch und danach wieder herunter."""
-    engine = create_engine(database_url, future=True)
-    config = alembic_config(database_url)
-    command.upgrade(config, "head")
-    try:
-        yield engine
-    finally:
-        command.downgrade(config, "base")
-        engine.dispose()
 
 
 def test_migration_matches_the_models(migrated):

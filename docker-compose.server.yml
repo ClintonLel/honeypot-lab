@@ -84,6 +84,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD fehlt in der .env}
       IP_HMAC_KEY: ${IP_HMAC_KEY:?IP_HMAC_KEY fehlt in der .env}
       INGEST_TOKEN: ${INGEST_TOKEN:?INGEST_TOKEN fehlt in der .env}
+      IPINFO_DB_PATH: /data/ipinfo.mmdb
       # Erst ab Phase 7 nötig.
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_GATEWAY_TOKEN: ${LLM_GATEWAY_TOKEN:-}
@@ -99,6 +100,9 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    volumes:
+      # Die IPinfo-Datenbank schreibt nur der Worker, die API liest sie.
+      - ipinfo:/data:ro
     cap_drop:
       - ALL
     healthcheck:
@@ -136,6 +140,7 @@ services:
       IP_HMAC_KEY: ${IP_HMAC_KEY:?IP_HMAC_KEY fehlt in der .env}
       INGEST_TOKEN: ${INGEST_TOKEN:?INGEST_TOKEN fehlt in der .env}
       IPINFO_TOKEN: ${IPINFO_TOKEN:-}
+      IPINFO_DB_PATH: /data/ipinfo.mmdb
     depends_on:
       db:
         condition: service_healthy
@@ -146,6 +151,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    volumes:
+      - ipinfo:/data
     cap_drop:
       - ALL
     mem_limit: 384m
@@ -166,3 +173,4 @@ networks:
 
 volumes:
   pgdata:
+  ipinfo:

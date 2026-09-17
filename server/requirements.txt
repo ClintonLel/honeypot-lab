@@ -8,4 +8,6 @@ sqlalchemy[asyncio]==2.0.54
 # psycopg 3 bedient synchrone und asynchrone Verbindungen.
 psycopg[binary]==3.3.5
 alembic==1.20.0
+# Liest die IPinfo-Lite-Datenbank (Schritt 4.1 und 4.3).
+maxminddb==3.2.0
 pydantic-settings==2.15.0

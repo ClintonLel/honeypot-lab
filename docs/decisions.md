@@ -41,6 +41,7 @@ bei der Übernahme ausformuliert.
 | E-021 | Caddy-Block für die Lab-API auf `api.tomkaufmann.dev`      | angenommen                                     |
 | E-022 | Fester HMAC-Schlüssel statt monatlicher Rotation            | angenommen                                     |
 | E-023 | Grundgerüst von API, Schema und Worker                      | angenommen                                     |
+| E-024 | Ingest: Prüfung, Idempotenz und Umgang mit Adressen         | angenommen                                     |
 
 ---
 
@@ -958,3 +959,56 @@ konstant. Es gibt keine Rotation. E-009 gilt unverändert weiter.
 - Die Testdatenbank `honeypot_test` muss auf dem Server existieren.
 - Lokal läuft eine andere Python-Version als im Container. Maßgeblich ist der
   Lauf im Container (E-010).
+
+---
+
+## E-024: Ingest: Prüfung, Idempotenz und Umgang mit Adressen
+
+- Status: angenommen
+- Datum: 2026-09-18
+- Quelle: Schritt 4.1, Auswertung der echten Beispiel-Logs in
+  `server/tests/fixtures/fixtures.jsonl`
+
+**Entscheidung:**
+
+- **Idempotenz über einen Inhalts-Hash.** `events.dedup_hash` ist ein SHA-256
+  über das Ereignis ohne die Felder, die erst auf dem Transportweg dazukommen
+  (`host`, `file`, `offset`, …). Cowries `uuid` taugt dafür nicht: Sie
+  kennzeichnet die Cowrie-Instanz, nicht das Ereignis, und ist in allen 175
+  Beispielzeilen dieselbe.
+- **Eine kaputte Zeile wirft nicht den Stapel weg.** Ungültige Ereignisse
+  werden gezählt und mit Grund zurückgemeldet, der Rest wird gespeichert.
+- **Adressen der Beteiligten werden ersetzt, nicht entschärft.** Cowrie
+  schreibt die Quell-IP auch in Freitexte („New connection: 1.2.3.4:59386“).
+  Dort steht künftig `<src>` beziehungsweise `<dst>`. Entschärfen allein
+  genügte nicht: `1[.]2[.]3[.]4` ist weiterhin die Adresse.
+- **Fremde Adressen und URLs in Befehlen bleiben**, aber entschärft
+  (`hxxp://`, `[.]`). Sie sind Gegenstand der Untersuchung.
+- **Interaktiv gegen Exec** entscheidet `cowrie.client.size`: Wer eine
+  Terminalgröße meldet, hat ein Pseudoterminal angefordert. Sitzungen mit
+  Befehlen ohne Terminalgröße sind Exec-Aufrufe, Sitzungen ohne Befehle
+  bleiben unentschieden (`NULL`).
+- **Ohne IPinfo-Datenbank läuft der Ingest weiter**, die Sitzung bekommt dann
+  kein Land.
+- **Grenzen:** höchstens 500 Ereignisse je Anfrage (Caddy begrenzt zusätzlich
+  den Body auf 1 MB), Freitexte werden gekürzt statt abgelehnt.
+
+**Begründung:**
+
+- Die Beispiel-Logs zeigen, womit zu rechnen ist: ein „Client“, der sich mit
+  `CONNECT …:80 HTTP/1.0` als Version meldet, Sitzungen ohne Login, Sitzungen
+  ohne jede Version. Strenge Prüfung mit Zählung statt Abbruch hält die
+  Pipeline trotzdem am Laufen.
+- `cowrie.session.params` kam in den Beispielen bei interaktiven Sitzungen und
+  bei Exec-Aufrufen vor und taugt deshalb nicht zur Unterscheidung.
+  `cowrie.client.size` trennt die beiden Gruppen sauber.
+- Ein zu langer Befehl ist ein Befund. Ihn wegzuwerfen hieße, gerade das
+  Auffällige zu verlieren.
+
+**Konsequenzen:**
+
+- Vector muss seine Batches unter 500 Ereignissen und 1 MB halten (Schritt 4.2).
+- `docs/method.md` beschreibt die Klassifikation so, wie sie hier steht. Ändert
+  sie sich nach dem Start von Variante B nicht mehr (README).
+- Die Sitzungen unserer eigenen Tests sind an `127.0.0.1` erkennbar und werden
+  in Schritt 7.1 ausgeschlossen.

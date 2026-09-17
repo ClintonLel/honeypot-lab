@@ -11,6 +11,7 @@ Tests laufen in zwei Stufen:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections.abc import AsyncIterator, Iterator
@@ -21,6 +22,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings, get_settings  # noqa: E402
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+SERVER_DIR = Path(__file__).resolve().parents[1]
 
 # Nur für Tests. Echte Secrets stehen ausschließlich in der .env auf dem Server.
 TEST_SECRET = "t" * 64
@@ -80,3 +84,39 @@ def database_url() -> str:
         return Settings(environment="test", postgres_db=name).database_url
 
     pytest.skip("LAB_TEST_DATABASE_URL oder LAB_TEST_DATABASE nicht gesetzt")
+
+
+def alembic_config(url: str):
+    """Alembic-Konfiguration, die auf die Testdatenbank zeigt."""
+    from alembic.config import Config
+
+    config = Config(str(SERVER_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(SERVER_DIR / "app" / "migrations"))
+    # psycopg 3 bedient sync und async, die URL passt für beides.
+    config.set_main_option("sqlalchemy.url", url)
+    return config
+
+
+@pytest.fixture
+def migrated(database_url: str):
+    """Fährt das Schema hoch und danach wieder herunter."""
+    from alembic import command
+    from sqlalchemy import create_engine
+
+    engine = create_engine(database_url, future=True)
+    config = alembic_config(database_url)
+    command.upgrade(config, "head")
+    try:
+        yield engine
+    finally:
+        command.downgrade(config, "base")
+        engine.dispose()
+
+
+@pytest.fixture
+def cowrie_events() -> list[dict]:
+    """Die echten Beispiel-Ereignisse vom Sensor, Adressen ersetzt."""
+    path = FIXTURES / "fixtures.jsonl"
+    if not path.exists():
+        pytest.skip("fixtures.jsonl fehlt, siehe sensor/README.md")
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
