@@ -53,8 +53,19 @@ def test_production_rejects_missing_secrets():
         production(postgres_password="")
 
 
-def test_tests_and_development_may_run_without_secrets():
-    assert Settings(environment="test").ip_hmac_key.get_secret_value() == ""
+def test_tests_and_development_may_run_without_secrets(monkeypatch):
+    """Außerhalb von production darf ein Secret fehlen.
+
+    Erst die Umgebung leeren, sonst prüft der Test die Werte des Rechners, auf
+    dem er läuft. Verglichen wird ein Wahrheitswert, nie der Wert selbst: Sonst
+    stünde bei einem Fehlschlag das Secret in der pytest-Ausgabe.
+    """
+    for name in ("POSTGRES_PASSWORD", "IP_HMAC_KEY", "INGEST_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = Settings(environment="test")
+    has_key = bool(settings.ip_hmac_key.get_secret_value())
+    assert has_key is False
 
 
 def test_settings_are_read_from_the_environment(monkeypatch):

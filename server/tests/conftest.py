@@ -37,18 +37,20 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def app_client(settings: Settings) -> Iterator["TestClient"]:
-    """FastAPI-App mit Test-Einstellungen, ohne echte Datenbank."""
+def app_client(monkeypatch) -> Iterator["TestClient"]:
+    """FastAPI-App mit Test-Einstellungen, ohne echte Datenbank.
+
+    Die Werte kommen über ``monkeypatch`` in die Umgebung und verschwinden
+    danach wieder. Direkt gesetzte ``os.environ``-Werte blieben stehen und
+    würden den Datenbanktests später ein falsches Passwort unterschieben.
+    """
     from fastapi.testclient import TestClient
 
     get_settings.cache_clear()
-    for key, value in {
-        "ENVIRONMENT": "test",
-        "POSTGRES_PASSWORD": TEST_SECRET,
-        "IP_HMAC_KEY": TEST_SECRET,
-        "INGEST_TOKEN": TEST_SECRET,
-    }.items():
-        os.environ[key] = value
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("POSTGRES_PASSWORD", TEST_SECRET)
+    monkeypatch.setenv("IP_HMAC_KEY", TEST_SECRET)
+    monkeypatch.setenv("INGEST_TOKEN", TEST_SECRET)
 
     from app.main import create_app
 
