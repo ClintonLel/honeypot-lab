@@ -157,6 +157,39 @@ Der Test schreibt 10 Zeilen, rotiert die Datei, trägt 5 weitere Zeilen in die
 rotierte und 10 in die neue Datei nach und startet Vector mit demselben
 `data_dir` erneut. Erwartet: 25 Zeilen, jede genau einmal.
 
+### Ergebnis am 2026-09-18
+
+| Prüfung                         | Ergebnis                                                        |
+|---------------------------------|-----------------------------------------------------------------|
+| Bestand nachgeliefert           | 14.178 Ereignisse, ältestes 2026-09-17 14:13:38 UTC (erste Testsitzung aus Schritt 2.2) |
+| Stapel                          | je 250 Ereignisse, `rejected 0`                                  |
+| Neustart von Vector             | Zählung vorher und nachher 14.178, kein Stapel erneut geschickt  |
+| Lieferung nach dem Neustart     | neuer Verbindungsversuch: `accepted 10`, `duplicates 0`          |
+| Rotationstest                   | 25 Zeilen, jede genau einmal                                     |
+
+Auf dem Weg dorthin sind drei Fehler aufgefallen, alle behoben:
+
+- **Plattenpuffer zu klein.** Vector verlangt mindestens 268.435.488 Bytes und
+  startete sonst mit Exit-Code 78 nicht.
+- **Platzhalter statt Token (E-026).** Seit Vector 0.57 wird `${VAR}` nicht
+  mehr ersetzt. Vector schickte den Platzhalter wörtlich, die API antwortete
+  401. Jetzt kommt das Token über den Secrets-Backend.
+- **Doppelte Hülle um den Stapel (E-027).** `payload_prefix "["` legte eine
+  zweite Klammer um das Array, das Vector schon selbst baut. Die API
+  antwortete 200 mit „kein Objekt“, und Vector hielt das für Erfolg.
+
+### Admin-Zugang nach einem Wechsel der eigenen IP
+
+Port 22022 ist in der Hetzner-Firewall `hp-sensor-fw` nur für die eigene
+IPv4-Adresse freigegeben (Regel „Adminzugang“). Wechselt der Anschluss die
+Adresse, laufen `ssh hp-sensor` und rsync in einen Timeout, während der
+Honeypot auf Port 22 weiter antwortet. Dann die aktuelle Adresse ermitteln und
+in der Regel ersetzen:
+
+```bash
+curl -4 -s https://ifconfig.me; echo
+```
+
 ## Beispiel-Logs für die Tests erzeugen (Schritt 4.1)
 
 `scripts/make-fixtures.py` wählt vollständige Sitzungen aus `cowrie.json` aus
