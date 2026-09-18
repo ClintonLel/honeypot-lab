@@ -14,6 +14,11 @@ WORKDIR /app
 # Feste UID, damit sich Rechte auf dem Host nicht mit anderen Diensten beißen.
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin lab
 
+# Mountpunkt für die IPinfo-Datenbank. Ein neues Volume übernimmt beim ersten
+# Einhängen Eigentümer und Rechte von hier. Ohne das gehörte es root, und der
+# Worker (uid 10001) könnte die Datei nicht ablegen (Schritt 4.3).
+RUN install -d -o lab -g lab -m 0755 /data
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 

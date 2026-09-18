@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # (Schritt 4.3), die API liest sie nur.
     ipinfo_db_path: str = "/data/ipinfo.mmdb"
 
+    # Nach so vielen Tagen löscht der Worker Roh-Events. Sitzungen, Befehle
+    # und die Tagesstatistik bleiben (Schritt 4.3).
+    raw_event_retention_days: int = Field(default=90, ge=7)
+
     # Nur für Tests und lokale Läufe interessant.
     sql_echo: bool = Field(default=False)
 

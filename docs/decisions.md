@@ -45,6 +45,7 @@ bei der Übernahme ausformuliert.
 | E-025 | Vector auf dem Sensor: Quelle, Stapel und Puffer            | angenommen, Token-Weg ersetzt durch E-026      |
 | E-026 | Ingest-Token über Vectors Secrets-Backend                   | angenommen                                     |
 | E-027 | Stapelform, rotierte Dateien, NUL-Bytes, Savepoints         | angenommen                                     |
+| E-028 | Worker: IPinfo-Download, Tagesstatistik, Aufräumen          | angenommen                                     |
 
 ---
 
@@ -1148,3 +1149,51 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
   verhindert der Inhalts-Hash (E-024).
 - Zur Kontrolle des Ingest gehört künftig immer auch das Log der API
   (`"msg": "ingest"` mit `rejected` und `reasons`), nicht nur das von Vector.
+
+---
+
+## E-028: Worker: IPinfo-Download, Tagesstatistik, Aufräumen
+
+- Status: angenommen
+- Datum: 2026-09-18
+- Quelle: Schritt 4.3
+
+**Entscheidung:**
+
+- Drei Jobs in einer Zeitplanschleife: `ipinfo` täglich, `statistik`
+  stündlich, `aufraeumen` täglich. Die im Bauplan vorgesehene monatliche
+  Rotation des HMAC-Schlüssels entfällt (E-022).
+- **IPinfo:** erst die Prüfsumme abfragen, nur bei Änderung laden. Die Datei
+  landet als `.part` im selben Volume, wird gegen die Prüfsumme geprüft und
+  probeweise geöffnet, erst dann per `os.replace` an ihren Platz gebracht. Nach
+  einem Neustart lädt der Worker nur, wenn die Datei fehlt oder älter als ein
+  Tag ist.
+- **Statistik:** heute, gestern und jeder Tag ohne Zeile in `daily_stats`,
+  jeweils komplett neu (löschen und schreiben in einer Transaktion). Grundlage
+  sind `sessions` und `commands`. Nur die Logins kommen aus `events`.
+- **Aufräumen:** erst fehlende Statistik nachrechnen, dann Roh-Events älter als
+  90 Tage in Portionen löschen.
+
+**Begründung:**
+
+- IPinfo erlaubt 10 Downloads am Tag je IP, die Prüfsumme zählt nicht mit. Ein
+  Worker, der bei jedem Neustart lädt, würde in einer Neustartschleife das
+  Limit reißen.
+- Die API liest die Datei in jedem Moment. Mit `os.replace` sieht sie immer
+  eine vollständige Datei, alt oder neu.
+- Die Statistik muss sich auch nach dem Löschen der Roh-Events nachrechnen
+  lassen. Deshalb stützt sie sich auf die abgeleiteten Tabellen.
+- Die URL enthält das Token. Fehlermeldungen des Downloads nennen deshalb nur
+  den Status, fremde Ausnahmen im Log nur ihren Typ.
+
+**Konsequenzen:**
+
+- Die 14.178 Ereignisse vom 17. und 18.09. kamen ohne IPinfo-Datenbank an. Ihre
+  Sitzungen bekommen ein Land nur durch ein einmaliges Neueinlesen vom Sensor,
+  solange die Rohlogs dort liegen (14 Tage).
+- Kennzahlen in `daily_stats`: `sessions`, `logins`, `sessions_interactive`,
+  `sessions_exec`, `commands`, `sources`, dazu `sessions_by_country` und
+  `sessions_by_hour` als Dimensionen. Je Tag gibt es Zeilen für `a`, `b` und
+  `all`. Sitzungen ohne Land zählen unter `??`.
+- Unsere eigenen Testsitzungen sind noch mitgezählt. Sie fallen in Schritt 7.1
+  heraus.

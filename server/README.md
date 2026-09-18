@@ -20,7 +20,8 @@ die API über Caddy erreichbar (E-021).
 | `app/hashing.py`            | HMAC-SHA256 der Quell-IPs (E-009, E-022)                   |
 | `app/logging.py`            | JSON-Logs                                                  |
 | `app/migrations/`           | Alembic, `0001_grundschema.py` legt alles an               |
-| `worker/main.py`            | Gerüst mit Schleife, Jobs folgen in Schritt 4.3            |
+| `worker/main.py`            | Zeitplan und Einzelläufe der Jobs                          |
+| `worker/jobs.py`            | `ipinfo`, `statistik`, `aufraeumen` (Schritt 4.3)          |
 | `tests/`                    | Tests ohne Datenbank und, mit Marker `db`, mit Datenbank   |
 | `../docker-compose.server.yml` | `db`, `api`, `worker` mit Limits und Netzen              |
 
@@ -174,6 +175,53 @@ cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml ps
 
 ```bash
 sudo docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}'
+```
+
+## Worker (Schritt 4.3)
+
+| Job          | Takt      | Was er tut                                                        |
+|--------------|-----------|-------------------------------------------------------------------|
+| `ipinfo`     | täglich   | Prüfsumme der IPinfo-Lite-Datenbank abfragen, nur bei Änderung laden, prüfen und atomar ersetzen |
+| `statistik`  | stündlich | `daily_stats` für heute, gestern und jeden Tag ohne Statistik neu rechnen |
+| `aufraeumen` | täglich   | fehlende Statistik nachrechnen, dann Roh-Events älter als 90 Tage löschen |
+
+Einen Job zur Rotation des HMAC-Schlüssels gibt es nicht, der Schlüssel bleibt
+fest (E-022). Jeder Lauf schreibt `job fertig` oder `job fehlgeschlagen` mit
+Dauer und Ergebnis ins Log.
+
+**IPinfo-Token.** Aus dem kostenlosen Konto auf ipinfo.io, als `IPINFO_TOKEN`
+in `/opt/honeypot-lab/.env`. Die URL mit Token taucht in keinem Log auf. IPinfo
+erlaubt 10 Downloads am Tag je IP, die Abfrage der Prüfsumme zählt nicht mit.
+Die Daten stehen unter CC BY-SA 4.0, der Quellenhinweis kommt in Schritt 5.2 auf
+die Seite.
+
+**Einzelne Läufe** ohne Warten auf den Zeitplan:
+
+```bash
+cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml exec worker python -m worker.main run ipinfo
+```
+
+`run statistik --alle-tage` rechnet jeden Tag neu, `run alle` alle Jobs
+nacheinander.
+
+**Länder für schon gespeicherte Sitzungen.** Was ankam, bevor die
+IPinfo-Datenbank da war, hat kein Land, und nachträglich anreichern geht nicht:
+Die Klartext-IPs sind weg. Solange die Rohlogs auf dem Sensor liegen
+(14 Tage), hilft ein einmaliges Neueinlesen: Positionsmerker von Vector
+löschen, Vector liest alles noch einmal, die API ergänzt bei bestehenden
+Sitzungen das fehlende Land, und die Ereignisse selbst werden als Dubletten
+verworfen (siehe `sensor/README.md`). Danach die Statistik neu rechnen:
+
+```bash
+cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml exec worker python -m worker.main run statistik --alle-tage
+```
+
+**Einmalig bei einem schon vorhandenen Volume `honeypot-lab_ipinfo`:** Es wurde
+angelegt, bevor das Image `/data` für den Worker vorbereitet hat, und gehört
+deshalb root. So bekommt es den richtigen Eigentümer:
+
+```bash
+sudo docker run --rm --user 0 -v honeypot-lab_ipinfo:/data honeypot-lab-api:local chown 10001:10001 /data
 ```
 
 ## Hinweise

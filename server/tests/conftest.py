@@ -120,3 +120,40 @@ def cowrie_events() -> list[dict]:
     if not path.exists():
         pytest.skip("fixtures.jsonl fehlt, siehe sensor/README.md")
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+# --- App gegen die Testdatenbank ---------------------------------------------
+
+TOKEN = "t" * 64
+KEY = "k" * 64
+
+
+@pytest.fixture
+def client(migrated, database_url: str, monkeypatch):
+    """Die App, verbunden mit der frisch migrierten Testdatenbank."""
+    from fastapi.testclient import TestClient
+    from sqlalchemy.engine import make_url
+
+    from app.main import create_app
+
+    url = make_url(database_url)
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("POSTGRES_HOST", url.host or "db")
+    monkeypatch.setenv("POSTGRES_PORT", str(url.port or 5432))
+    monkeypatch.setenv("POSTGRES_USER", url.username or "honeypot")
+    monkeypatch.setenv("POSTGRES_PASSWORD", url.password or "")
+    monkeypatch.setenv("POSTGRES_DB", url.database or "honeypot_test")
+    monkeypatch.setenv("INGEST_TOKEN", TOKEN)
+    monkeypatch.setenv("IP_HMAC_KEY", KEY)
+    # Ohne MMDB läuft der Ingest weiter, nur ohne Land (Schritt 4.3).
+    monkeypatch.setenv("IPINFO_DB_PATH", "/nicht/vorhanden.mmdb")
+
+    get_settings.cache_clear()
+    app = create_app()
+    with TestClient(app) as test_client:
+        yield test_client
+    get_settings.cache_clear()
+
+
+def send(client, events, token: str = TOKEN):
+    return client.post("/ingest", json=events, headers={"Authorization": f"Bearer {token}"})
