@@ -216,6 +216,26 @@ verworfen (siehe `sensor/README.md`). Danach die Statistik neu rechnen:
 cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml exec worker python -m worker.main run statistik --alle-tage
 ```
 
+**Ergebnis am 2026-09-18:**
+
+| Job          | Lauf                                                                 |
+|--------------|----------------------------------------------------------------------|
+| `ipinfo`     | Schleife nach dem Start: `aktualisiert`, 24,3 MB, Prüfsumme geprüft. Einzellauf zehn Sekunden später: `unverändert`, kein zweiter Download |
+| `statistik`  | 2 Tage, 70 Zeilen; nach dem Nachtrag der Länder `--alle-tage`: 200 Zeilen |
+| `aufraeumen` | 0 gelöscht, Stichtag 2026-06-20                                        |
+
+Nach dem Neueinlesen vom Sensor haben 2.414 von 2.427 Sitzungen ein Land. Ohne
+Land bleiben die eigenen Testsitzungen von `127.0.0.1`.
+
+Ein Stolperstein beim Eintragen des Tokens: Landet der Wert ohne
+`IPINFO_TOKEN=` in der `.env`, ist die Variable für Compose leer, und der
+Worker wird bei `up -d` nicht neu erzeugt (`Running` statt `Started`). Die
+Namen in der Datei lassen sich prüfen, ohne Werte zu zeigen:
+
+```bash
+sudo awk -F= '{ print (NF > 1 ? $1 : "(Zeile ohne =)") }' /opt/honeypot-lab/.env
+```
+
 **Einmalig bei einem schon vorhandenen Volume `honeypot-lab_ipinfo`:** Es wurde
 angelegt, bevor das Image `/data` für den Worker vorbereitet hat, und gehört
 deshalb root. So bekommt es den richtigen Eigentümer:
