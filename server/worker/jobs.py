@@ -168,7 +168,8 @@ def _update_ipinfo(ctx: Context) -> dict[str, Any]:
 
     # Die Zwischendatei liegt im selben Verzeichnis, sonst wäre os.replace
     # nicht atomar. Die API sieht immer entweder die alte oder die neue Datei.
-    part = target.with_name(f".{target.name}.part")
+    # Die Prozessnummer im Namen trennt einen Einzellauf von der Schleife.
+    part = target.with_name(f".{target.name}.{os.getpid()}.part")
     try:
         size, local = _download(ctx, token, part)
         if remote and local != remote:
