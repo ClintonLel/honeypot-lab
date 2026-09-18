@@ -190,6 +190,7 @@ sudo docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPe
 | `GET /stats/heatmap?days=28&variant=all` | 7 × 24, Montag bis Sonntag, Stunde in UTC             |
 | `GET /stats/breakdown?days=30`         | je Variante: interaktiv, Exec, ohne Befehl              |
 | `GET /stats/campaigns`                 | die 10 größten Kampagnen (ab Schritt 6.2)              |
+| `GET /stats/recent`                    | die letzten 12 Befehle in der Form der Stream-Meldungen, älteste zuerst (Schritt 5.2) |
 
 Statistik wird 30 Sekunden gecacht, 60 Anfragen pro Minute und höchstens 3
 offene Streams je Client (E-029).
@@ -220,6 +221,23 @@ Stand der Statistik an diesem Tag, als Anhaltspunkt für Phase 7:
   Persona-Tests von `127.0.0.1`), 761 Exec-Aufrufe, 1.672 ohne Befehl.
 - Rund drei Viertel der Sitzungen aus den Niederlanden (1.806), mit Abstand
   gefolgt von DE (143) und GB (103).
+
+## Seite /lab (Schritt 5.2)
+
+Die Seite selbst liegt im Repo Website-Demo unter `lab/`, `gate` liefert sie
+aus (E-030). Aufbau und Datenquellen stehen in `docs/wireframe.md`. Von hier
+kommt nur der Endpunkt `/stats/recent`, damit „Letzte Befehle“ nicht leer
+startet.
+
+Reihenfolge beim Ausrollen: erst die API (rsync, `build`, `up -d`, Tests wie
+oben), dann den Pull Request in Website-Demo mergen. Die Seite kommt auch
+ohne `/stats/recent` aus, die Liste füllt sich dann erst über den Stream.
+
+Prüfen, dass der Endpunkt antwortet und keine Adresse enthält:
+
+```bash
+curl -s https://api.tomkaufmann.dev/stats/recent | python3 -m json.tool | head -20
+```
 
 ## Worker (Schritt 4.3)
 

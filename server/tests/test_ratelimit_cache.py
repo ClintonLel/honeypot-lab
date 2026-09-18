@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.ratelimit import RateLimiter, client_key
-from app.stats import TTLCache, breakdown_table, heatmap_matrix, pivot_countries
+from app.stats import TTLCache, breakdown_table, heatmap_matrix, pivot_countries, recent_messages
 
 
 def request_from(forwarded: str | None = None, host: str = "172.20.0.5"):
@@ -178,3 +179,17 @@ def test_the_breakdown_derives_sessions_without_commands():
     table = breakdown_table(rows)
     assert table["a"] == {"sessions": 10, "interactive": 2, "exec": 3, "without_commands": 5}
     assert table["b"]["sessions"] == 0
+
+
+def test_recent_commands_come_oldest_first_and_short():
+    newer = (datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc), "a", "NL", "x" * 200)
+    older = (datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc), "b", None, "uname -a")
+    messages = recent_messages([newer, older])
+    assert messages[0] == {
+        "ts": "2026-09-18T12:00:00Z",
+        "variant": "b",
+        "country": None,
+        "event": "command",
+        "command": "uname -a",
+    }
+    assert len(messages[1]["command"]) == 80 and messages[1]["command"].endswith("…")

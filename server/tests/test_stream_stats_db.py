@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from app.stats import RECENT_COMMANDS
 from app.stream import STREAM_EVENTS, Broadcaster
 from tests.conftest import make_ctx, run, send
 from worker import jobs
@@ -143,8 +144,36 @@ def test_there_are_no_campaigns_yet(client, aggregated):
     assert get(client, "/stats/campaigns").json() == {"campaigns": []}
 
 
+def test_the_recent_commands_are_the_last_ones_of_the_stream(client, listener, cowrie_events):
+    send(client, cowrie_events)
+    streamed = [m for m in drain(listener) if m["event"] == "command"]
+
+    body = get(client, "/stats/recent").json()
+    assert body["messages"] == streamed[-RECENT_COMMANDS:]
+
+
+def test_the_recent_commands_carry_no_address(client, cowrie_events):
+    send(client, cowrie_events)
+    everything = json.dumps(get(client, "/stats/recent").json())
+    addresses = {e[field] for e in cowrie_events for field in ("src_ip", "dst_ip") if e.get(field)}
+    for address in addresses:
+        assert address not in everything
+        assert address.replace(".", "[.]") not in everything
+
+
+def test_without_commands_the_list_is_empty(client):
+    assert get(client, "/stats/recent").json() == {"messages": []}
+
+
 def test_statistics_may_be_cached_for_30_seconds(client, aggregated):
-    for path in ("/stats/overview", "/stats/countries", "/stats/heatmap", "/stats/breakdown", "/stats/campaigns"):
+    for path in (
+        "/stats/overview",
+        "/stats/countries",
+        "/stats/heatmap",
+        "/stats/breakdown",
+        "/stats/campaigns",
+        "/stats/recent",
+    ):
         assert get(client, path).headers["Cache-Control"] == "public, max-age=30"
 
 

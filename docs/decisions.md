@@ -47,6 +47,7 @@ bei der Übernahme ausformuliert.
 | E-027 | Stapelform, rotierte Dateien, NUL-Bytes, Savepoints         | angenommen                                     |
 | E-028 | Worker: IPinfo-Download, Tagesstatistik, Aufräumen          | angenommen                                     |
 | E-029 | Live-Stream und Statistik-Endpunkte                         | angenommen                                     |
+| E-030 | Seite /lab: eigenes Projekt in Website-Demo, eigene Globus-Instanz | angenommen                              |
 
 ---
 
@@ -1252,3 +1253,69 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
   (README „Harte Regeln“, Schritt 5.2). Entschärft heißt nicht harmlos für
   HTML.
 - Unsere eigenen Testsitzungen zählen in der Statistik noch mit (Schritt 7.1).
+
+---
+
+## E-030: Seite /lab: eigenes Projekt in Website-Demo, eigene Globus-Instanz
+
+- Status: angenommen
+- Datum: 2026-09-18
+- Quelle: Schritt 5.2, `docs/wireframe.md`, Pull Request in `ClintonLel/Website-Demo`
+
+**Entscheidung:**
+
+- **Eigenes Vite-Projekt `lab/` in Website-Demo**, neben `globe-demo/`.
+  Gleicher Stack (React 19.2.4, globe.gl 2.45.0, three 0.182.0), aber eigener
+  Build unter `/lab/` in einer eigenen Stufe des Dockerfiles. `gate` liefert
+  `/lab` öffentlich aus, ohne Login.
+- **Eigene Globus-Komponente `LabGlobe`** statt `useGlobeScene` aus der Demo.
+  Dunkel, ohne Klicks, ohne Rotation. Bögen vom Mittelpunkt des Herkunftslands
+  (Beschriftungspunkte aus Natural Earth) nach Nürnberg.
+- **Nichts von Dritten.** Länderumrisse aus dem npm-Paket `world-atlas`,
+  Mittelpunkte als Tabelle im Repo, Ländernamen per `Intl.DisplayNames`,
+  Systemschriften.
+- **Content-Security-Policy auf `/lab`:** Skripte nur von der eigenen
+  Herkunft, Verbindungen nur dorthin und zu `https://api.<DOMAIN>`, kein
+  Einbetten. `style-src` erlaubt `'unsafe-inline'`, weil globe.gl drei kleine
+  `<style>`-Tags einfügt.
+- **Angreifer-Texte nur als Text:** ESLint verbietet jeden Weg zu HTML aus
+  einem String (auch die Tooltip-Accessoren von globe.gl), ein Test rendert
+  feindliche Befehle. Die Seite prüft auch Meldungen der eigenen API noch
+  einmal (Felder, Länge, Steuer- und Richtungszeichen).
+- **Neuer Endpunkt `GET /stats/recent`:** die letzten 12 Befehle in der Form
+  der Stream-Meldungen, 30 Sekunden gecacht.
+- **Vorerst nur Deutsch.**
+
+**Begründung:**
+
+- `globe-demo` wird unter `/demo/` hinter dem Login gebaut. Eine zweite Seite
+  im selben Build bräuchte einen anderen Basis-Pfad und würde die Demo ändern.
+  Ein eigenes Projekt lässt die Demo unberührt (README „Harte Regeln“). Die
+  Aussage aus E-010, der bestehende Stack erspare einen zweiten
+  Build-Prozess, gilt damit nur noch für den Stack, nicht für den Build.
+- `useGlobeScene` ist mit dem Shop verdrahtet (Japan-Flagge, Klick öffnet den
+  Shop, Intro-Text) und lädt Länder und Textur zur Laufzeit von GitHub und
+  unpkg. Diese Server sähen sonst die Adresse jedes Besuchers.
+- Der Bloom aus der Demo (`GlobePostProcessingEffect.js`) wird nicht
+  übernommen: Er ruft `composer.removeAllPasses()` auf, das three.js'
+  `EffectComposer` nicht kennt, und bleibt deshalb auch in der Demo still
+  wirkungslos.
+- Der Globus dreht sich nicht, weil fast alle Bögen in Nürnberg enden und der
+  Sensor sonst aus dem Bild wandert. Auf Touch-Geräten ist nur das Drehen
+  gesperrt, nicht die Controls: Ohne `controls.update()` zeigt die Kamera
+  nicht mehr auf den Erdmittelpunkt.
+- Ohne `/stats/recent` bliebe „Letzte Befehle“ nach dem Laden minutenlang
+  leer. Befehle kommen im Schnitt nur etwa alle zwei Minuten.
+
+**Konsequenzen:**
+
+- Wer die Seite findet, kann einen eigenen Befehl eingeben und sehen, ob er
+  dort erscheint. So lässt sich der Sensor als Honeypot erkennen. Das betrifft
+  A und B gleich und gehört als Grenze in `docs/method.md`.
+- Ein Tab im Hintergrund hält keinen Stream offen und lädt Statistik nur
+  einmal. So bleiben die 200 Plätze des Verteilers (E-029) für sichtbare
+  Seiten.
+- Die Seite nennt den Standort des Sensors (Nürnberg), nie seine Adresse.
+- Änderungen an `/lab` laufen wie die am Caddy-Block per Pull Request in
+  Website-Demo. Die Pipeline dort baut und prüft `lab/` mit (Lint, Tests,
+  Build) und fragt nach jedem Deploy `/lab` samt CSP ab.

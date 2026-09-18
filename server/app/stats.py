@@ -1,4 +1,4 @@
-"""GET /stats/*: Kennzahlen für die Seite /lab (Schritt 5.1).
+"""GET /stats/*: Kennzahlen für die Seite /lab (Schritt 5.1, /recent aus 5.2).
 
 Grundlage ist ``daily_stats``, die der Worker stündlich rechnet (E-028). Nur
 „heute“ in der Übersicht kommt live aus ``sessions``, sonst hinkte der Kopf der
@@ -22,8 +22,10 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.defang import shorten
 from app.models import Campaign
 from app.ratelimit import rate_limited
+from app.stream import PREVIEW_LENGTH
 
 router = APIRouter(prefix="/stats", dependencies=[Depends(rate_limited)])
 
@@ -33,6 +35,7 @@ VARIANTS = ("a", "b", "all")
 ONLINE_WINDOW = timedelta(minutes=15)
 TOP_COUNTRIES = 50
 TOP_CAMPAIGNS = 10
+RECENT_COMMANDS = 12
 WEEKDAYS = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
 
 Days = Query(default=30, ge=1, le=365, description="Zeitraum in Tagen bis einschließlich heute")
@@ -285,6 +288,50 @@ async def breakdown(request: Request, response: Response, days: int = Days) -> d
         return {"days": days, "until": today.isoformat(), "variants": breakdown_table(rows)}
 
     return await request.app.state.stats_cache.get(("breakdown", today, days), compute)
+
+
+# --- Letzte Befehle ----------------------------------------------------------
+
+RECENT_SQL = text(
+    """
+    SELECT c.occurred_at, se.variant, se.country, c.command
+    FROM commands c
+    JOIN sessions se ON se.id = c.session_id
+    ORDER BY c.occurred_at DESC, c.id DESC
+    LIMIT :limit
+    """
+)
+
+
+def recent_messages(rows: list[Any]) -> list[dict[str, Any]]:
+    """Dieselbe Form wie eine Befehlsmeldung im Stream, älteste zuerst.
+
+    ``commands.command`` ist beim Ingest schon ohne Adresse des Angreifers
+    und entschärft gespeichert worden (E-024). Hier nur noch auf die Länge
+    der Vorschau.
+    """
+    return [
+        {
+            "ts": _iso(occurred_at),
+            "variant": variant,
+            "country": country,
+            "event": "command",
+            "command": shorten(command, PREVIEW_LENGTH),
+        }
+        for occurred_at, variant, country, command in reversed(rows)
+    ]
+
+
+@router.get("/recent")
+async def recent(request: Request, response: Response) -> dict[str, Any]:
+    """Die letzten Befehle, damit die Seite nicht mit leerer Liste startet."""
+    cached(response)
+
+    async def compute() -> dict[str, Any]:
+        rows = await _rows(request.app.state.engine, RECENT_SQL, {"limit": RECENT_COMMANDS})
+        return {"messages": recent_messages(rows)}
+
+    return await request.app.state.stats_cache.get(("recent",), compute)
 
 
 # --- Kampagnen ---------------------------------------------------------------
