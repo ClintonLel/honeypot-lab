@@ -34,6 +34,21 @@ def test_a_single_object_is_a_batch_of_one():
     assert parse_batch(b'{"a": 1}') == [{"a": 1}]
 
 
+def test_a_second_array_around_the_batch_is_unwrapped():
+    """So kam es an, als Vector das Array selbst baute und payload_prefix
+    noch eine Klammer darumlegte (E-027)."""
+    assert parse_batch(b'[[{"a": 1}, {"a": 2}]]') == [{"a": 1}, {"a": 2}]
+
+
+def test_only_one_level_is_unwrapped():
+    assert parse_batch(b"[[[1]]]") == [[1]]
+
+
+def test_a_mixed_list_is_left_alone():
+    """Einzelne Nicht-Objekte werden später als Ereignis abgelehnt, nicht hier."""
+    assert parse_batch(b'[{"a": 1}, [2]]') == [{"a": 1}, [2]]
+
+
 def test_an_empty_body_is_an_empty_batch():
     assert parse_batch(b"") == []
     assert parse_batch(b"   \n") == []

@@ -86,6 +86,12 @@ FUTURE_TOLERANCE = timedelta(hours=1)
 
 MAX_BATCH = 500
 
+# PostgreSQL speichert kein NUL-Byte, weder in text noch in jsonb. Angreifer
+# schicken es trotzdem, etwa in Benutzernamen. Statt die Zeile zu verlieren,
+# steht an der Stelle das sichtbare Zeichen für NUL.
+NUL = "\x00"
+NUL_MARK = "\u2400"
+
 
 class EventRejected(ValueError):
     """Ein Ereignis hat die Prüfung nicht bestanden."""
@@ -158,7 +164,7 @@ def clean_text(value: Any, limit_key: str, pairs: list[tuple[str, str]] | None =
         return None
     if not isinstance(value, str):
         value = str(value)
-    shortened = shorten(value, LIMITS.get(limit_key, LIMITS["text"]))
+    shortened = shorten(without_nul(value), LIMITS.get(limit_key, LIMITS["text"]))
     return defang(redact(shortened, pairs or []))
 
 
@@ -178,14 +184,21 @@ def redact(text: str, pairs: list[tuple[str, str]]) -> str:
     return text
 
 
+def without_nul(text: str) -> str:
+    return text.replace(NUL, NUL_MARK) if NUL in text else text
+
+
 def defang_payload(value: Any, pairs: list[tuple[str, str]], depth: int = 0) -> Any:
     """Entfernt die Adressen der Beteiligten und entschärft jeden Text."""
     if depth > 6:
         return None
     if isinstance(value, str):
-        return defang(redact(shorten(value, LIMITS["input"]), pairs))
+        return defang(redact(shorten(without_nul(value), LIMITS["input"]), pairs))
     if isinstance(value, dict):
-        return {str(k)[:64]: defang_payload(v, pairs, depth + 1) for k, v in list(value.items())[:64]}
+        return {
+            without_nul(str(k))[:64]: defang_payload(v, pairs, depth + 1)
+            for k, v in list(value.items())[:64]
+        }
     if isinstance(value, list):
         return [defang_payload(v, pairs, depth + 1) for v in value[:64]]
     if isinstance(value, (int, float, bool)) or value is None:
@@ -196,7 +209,8 @@ def defang_payload(value: Any, pairs: list[tuple[str, str]], depth: int = 0) -> 
 def normalize(raw: Any, now: datetime | None = None) -> NormalizedEvent:
     """Prüft ein Ereignis und gibt die speicherbare Fassung zurück."""
     if not isinstance(raw, dict):
-        raise EventRejected("kein Objekt")
+        # Der Typ im Grund macht Formfehler im Log sofort erkennbar (E-027).
+        raise EventRejected(f"kein Objekt ({type(raw).__name__})")
 
     eventid = raw.get("eventid")
     if not isinstance(eventid, str) or eventid not in KNOWN_EVENTIDS:

@@ -48,7 +48,7 @@ sources:
   cowrie:
     type: file
     include:
-      - /logs/cowrie.json
+      - /logs/cowrie.json*
     read_from: beginning
     fingerprint:
       strategy: checksum

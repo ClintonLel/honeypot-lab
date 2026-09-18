@@ -21,10 +21,13 @@ sources:
   cowrie:
     type: file
     include:
+      # Die aktuelle Datei und die rotierten (cowrie.json.JJJJ-MM-TT). Ohne
+      # die rotierten ginge verloren, was nach Mitternacht noch in die alte
+      # Datei läuft, und ältere Tage würden nie gelesen. Doppelt liest Vector
+      # nichts: Er erkennt eine umbenannte Datei am Inhalt (E-027).
       # Nur Variante A. Variante B bekommt in Phase 7 denselben Eintrag und
-      # ihren eigenen Mount in docker-compose.yml. Ein Pfad ohne Mount würde
-      # das Log mit Warnungen füllen.
-      - /srv/honeypot/a/var/log/cowrie/cowrie.json
+      # ihren eigenen Mount in docker-compose.yml.
+      - /srv/honeypot/a/var/log/cowrie/cowrie.json*
     # Beim ersten Start alles mitnehmen, was schon dasteht. Danach merkt sich
     # Vector die Position im data_dir.
     read_from: beginning
@@ -82,14 +85,14 @@ sinks:
       token: "SECRET[lab.ingest_token]"
     encoding:
       codec: json
-    # Ein Stapel geht als JSON-Array raus: Die einzelnen Ereignisse werden mit
-    # Komma getrennt und in Klammern gesetzt.
+    # Mit JSON und Komma als Trenner baut Vector den Stapel selbst als Array
+    # [e1,e2,...]. payload_prefix und payload_suffix wären eine zweite Hülle
+    # darum. Mit "[" und "]" kam deshalb [[e1,e2,...]] an, und die API sah
+    # je Anfrage ein einziges Element, das kein Objekt war (E-027).
     framing:
       method: character_delimited
       character_delimited:
         delimiter: ","
-    payload_prefix: "["
-    payload_suffix: "]"
     # Die API nimmt höchstens 500 Ereignisse, Caddy begrenzt den Body auf
     # 1 MB (E-021, E-024). Beides mit Abstand unterschritten.
     batch:

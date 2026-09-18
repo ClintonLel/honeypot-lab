@@ -51,6 +51,12 @@ def test_a_line_that_is_not_an_object_is_rejected():
         normalize(["kein", "objekt"], now=NOW)
 
 
+def test_the_reason_names_the_type_that_arrived():
+    """Mit „kein Objekt (list)“ wäre E-027 sofort aufgefallen."""
+    with pytest.raises(EventRejected, match=r"kein Objekt \(list\)"):
+        normalize([], now=NOW)
+
+
 @pytest.mark.parametrize("session", ["", "a" * 65, "hat leerzeichen", "boeser;wert"])
 def test_invalid_session_ids_are_rejected(session: str):
     with pytest.raises(EventRejected, match="session"):
@@ -168,6 +174,27 @@ def test_credentials_are_kept_but_limited():
     fields = extract_fields(raw(eventid="cowrie.login.failed", username="root", password="x" * 500))
     assert fields["username"] == "root"
     assert len(fields["password"]) == 128
+
+
+# --- NUL-Bytes --------------------------------------------------------------
+
+
+def test_nul_bytes_become_a_visible_mark():
+    """PostgreSQL speichert kein NUL-Byte. Ein Angreifer-Login darf daran nicht
+    den ganzen Stapel scheitern lassen (E-027)."""
+    event = normalize(
+        raw(eventid="cowrie.login.failed", username="ro\x00ot", password="x\x00", message="a\x00b"),
+        now=NOW,
+    )
+    assert event.fields["username"] == "ro\u2400ot"
+    assert event.fields["password"] == "x\u2400"
+    assert "\x00" not in json.dumps(event.payload, ensure_ascii=False)
+    assert "\\u0000" not in json.dumps(event.payload)
+
+
+def test_nul_bytes_in_keys_are_removed_too():
+    event = normalize(raw(**{"schl\x00ssel": "wert"}), now=NOW)
+    assert all("\x00" not in key for key in event.payload)
 
 
 # --- Die echten Beispiele vom Sensor ----------------------------------------

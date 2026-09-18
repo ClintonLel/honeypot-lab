@@ -44,6 +44,7 @@ bei der Übernahme ausformuliert.
 | E-024 | Ingest: Prüfung, Idempotenz und Umgang mit Adressen         | angenommen                                     |
 | E-025 | Vector auf dem Sensor: Quelle, Stapel und Puffer            | angenommen, Token-Weg ersetzt durch E-026      |
 | E-026 | Ingest-Token über Vectors Secrets-Backend                   | angenommen                                     |
+| E-027 | Stapelform, rotierte Dateien, NUL-Bytes, Savepoints         | angenommen                                     |
 
 ---
 
@@ -1097,3 +1098,53 @@ E-025.
   `/srv/honeypot/vector` gelöscht werden, damit Vector den Bestand noch einmal
   liest. Die Idempotenz der API (E-024) macht das gefahrlos.
 - Die API protokolliert bei 401 die Form des Headers, nie den Wert.
+
+---
+
+## E-027: Stapelform, rotierte Dateien, NUL-Bytes, Savepoints
+
+- Status: angenommen
+- Datum: 2026-09-18
+- Quelle: Schritt 4.2, Fehlersuche nach 0 Ereignissen trotz laufendem Vector
+
+**Befund:** Nach der Umstellung auf den Secrets-Backend (E-026) lief Vector
+ohne Fehlermeldung, in der Datenbank kam aber nichts an. Das Log der API zeigte
+je Anfrage `accepted 0, rejected 1, kein Objekt`. Mit `codec: json` und Komma
+als Trenner baut Vector das Array selbst. `payload_prefix: "["` und
+`payload_suffix: "]"` legten eine zweite Klammer darum, es kam `[[e1, e2, …]]`
+an: eine Liste mit einem einzigen Element, das kein Objekt ist. Die API
+antwortete 200, Vector hielt das für Erfolg und rückte weiter.
+
+**Entscheidung:**
+
+- **Keine `payload_prefix`/`payload_suffix` in Vector.** Vector schickt ein
+  schlichtes Array.
+- **Die API entpackt eine zweite Array-Hülle** (eine Ebene tief), damit dieselbe
+  Fehleinstellung nicht noch einmal unbemerkt Daten kostet.
+- **Der Ablehnungsgrund nennt den Typ** (`kein Objekt (list)`). Damit wäre der
+  Fehler im ersten Log sofort erkennbar gewesen.
+- **Vector liest `cowrie.json*`**, also auch die rotierten Dateien. Was nach
+  Mitternacht UTC noch in die alte Datei läuft, ginge sonst verloren, und
+  ältere Tage würden nie gelesen. Doppelt liest Vector nichts, er erkennt eine
+  umbenannte Datei am Inhalt (E-025).
+- **NUL-Bytes werden durch „␀“ ersetzt.** PostgreSQL speichert sie weder in
+  `text` noch in `jsonb`, Angreifer schicken sie trotzdem.
+- **Jedes Ereignis bekommt einen eigenen Savepoint.** Scheitert eines an der
+  Datenbank, zählt es als `datenbankfehler`, der Rest des Stapels bleibt.
+
+**Begründung:**
+
+- E-024 versprach, dass eine kaputte Zeile nicht den Stapel wegwirft. Das galt
+  nur für Prüffehler. Ein Datenbankfehler (etwa durch ein NUL-Byte) hätte mit
+  500 geendet, Vector hätte fünf Minuten wiederholt und dann 250 Ereignisse
+  verworfen, während alles dahinter wartet.
+- Eine Antwort mit 200 und lauter Ablehnungen ist für Vector ein Erfolg. Solche
+  Fehler fallen nur im Log der API auf, nicht bei Vector.
+
+**Konsequenzen:**
+
+- Nach dem Einspielen muss der Positionsmerker auf dem Sensor gelöscht werden,
+  damit Vector den Bestand ab 2026-09-17 noch einmal liest. Duplikate
+  verhindert der Inhalts-Hash (E-024).
+- Zur Kontrolle des Ingest gehört künftig immer auch das Log der API
+  (`"msg": "ingest"` mit `rejected` und `reasons`), nicht nur das von Vector.

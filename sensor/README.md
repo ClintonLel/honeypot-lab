@@ -122,7 +122,14 @@ ssh globe 'cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.
 
 Antwortet die API mit 401 oder 422, gilt der Versuch für Vector als endgültig
 gescheitert („Not retriable“): Die Ereignisse sind weg, und die Leseposition
-rückt trotzdem vor. Nach so einem Fehler den Positionsmerker löschen, damit
+rückt trotzdem vor. Genauso bei einer Antwort mit 200, in der die API alles
+abgelehnt hat — das sieht nur das Log der API, Vector bleibt still (E-027):
+
+```bash
+ssh globe 'sudo docker logs honeypot-lab-api-1 --since 1h 2>&1 | grep "\"msg\": \"ingest\"" | tail -5'
+```
+
+Stehen dort `rejected` und `reasons`, liegt ein Formfehler vor. Nach so einem Fehler den Positionsmerker löschen, damit
 Vector den Bestand noch einmal liest. Doppelte Ereignisse erkennt die API am
 Inhalts-Hash (E-024), es entstehen also keine Duplikate:
 

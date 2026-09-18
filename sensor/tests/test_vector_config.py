@@ -80,13 +80,19 @@ def test_the_sink_points_at_the_lab_api(config):
     assert sink["auth"] == {"strategy": "bearer", "token": "SECRET[lab.ingest_token]"}
 
 
-def test_a_batch_is_valid_json(config):
-    """Aus einzelnen Ereignissen wird ein Array, sonst nimmt die API es nicht."""
+def test_a_batch_is_a_plain_json_array(config):
+    """Vector baut das Array selbst.
+
+    Eine zusätzliche Hülle aus payload_prefix und payload_suffix ergab
+    [[e1, e2]], und die API sah ein einziges Element, das kein Objekt war
+    (E-027).
+    """
     sink = config["sinks"]["lab_api"]
     assert sink["encoding"]["codec"] == "json"
-    assert sink["payload_prefix"] == "["
-    assert sink["payload_suffix"] == "]"
+    assert sink["framing"]["method"] == "character_delimited"
     assert sink["framing"]["character_delimited"]["delimiter"] == ","
+    assert "payload_prefix" not in sink
+    assert "payload_suffix" not in sink
 
 
 def test_the_secret_backend_reads_the_mounted_directory(config, compose):
@@ -112,6 +118,18 @@ def test_the_file_is_recognized_by_its_content(config):
 
 def test_everything_that_is_already_there_is_read(config):
     assert config["sources"]["cowrie"]["read_from"] == "beginning"
+
+
+def test_rotated_files_are_watched_too(config):
+    """Cowrie rotiert um Mitternacht UTC. Was danach noch in die alte Datei
+    läuft, ginge sonst verloren."""
+    assert all(path.endswith("cowrie.json*") for path in config["sources"]["cowrie"]["include"])
+
+
+def test_the_rotation_test_watches_the_same_files(config):
+    """Der Test prüft nur etwas, wenn er dieselben Dateien beobachtet."""
+    script = read(SENSOR / "scripts" / "test-vector-rotation.sh")
+    assert "- /logs/cowrie.json*" in script
 
 
 def test_an_outage_is_buffered_on_disk(config):

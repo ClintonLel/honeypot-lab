@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -96,6 +97,11 @@ def parse_batch(body: bytes) -> list[Any]:
         parsed = None
 
     if isinstance(parsed, list):
+        # Eine zweite Hülle um den Stapel ([[e1, e2]]) wird eine Ebene tief
+        # entpackt. So kam es an, als Vector mit payload_prefix "[" lief und
+        # das Array schon selbst gebaut hatte (E-027).
+        if parsed and all(isinstance(item, list) for item in parsed):
+            return [event for inner in parsed for event in inner]
         return parsed
     if isinstance(parsed, dict):
         if isinstance(parsed.get("events"), list):
@@ -218,6 +224,36 @@ async def add_command(db: AsyncSession, event: NormalizedEvent, session_id: int)
     )
 
 
+async def store_event(
+    db: AsyncSession, event: NormalizedEvent, ip_hash: str | None, origin: Origin
+) -> bool:
+    """Speichert ein Ereignis. False heißt: war schon da."""
+    session_id = await upsert_session(db, event, ip_hash, origin)
+
+    inserted = await db.scalar(
+        insert(Event)
+        .values(
+            dedup_hash=event.dedup_hash,
+            session_id=session_id,
+            cowrie_session=event.cowrie_session,
+            eventid=event.eventid,
+            variant=event.variant,
+            occurred_at=event.occurred_at,
+            payload=event.payload,
+        )
+        .on_conflict_do_nothing(constraint="uq_events_dedup_hash")
+        .returning(Event.id)
+    )
+    if inserted is None:
+        return False
+
+    if session_id is not None:
+        await apply_event(db, event, session_id)
+        if event.eventid == "cowrie.command.input":
+            await add_command(db, event, session_id)
+    return True
+
+
 @router.post("/ingest", dependencies=[Depends(require_sensor_token)])
 async def ingest(
     request: Request,
@@ -253,31 +289,25 @@ async def ingest(
         # Ab hier existiert die Adresse nirgends mehr: payload ist ohne sie
         # entstanden, gespeichert wird nur der Hash.
 
-        session_id = await upsert_session(db, event, ip_hash, origin)
-
-        inserted = await db.scalar(
-            insert(Event)
-            .values(
-                dedup_hash=event.dedup_hash,
-                session_id=session_id,
-                cowrie_session=event.cowrie_session,
-                eventid=event.eventid,
-                variant=event.variant,
-                occurred_at=event.occurred_at,
-                payload=event.payload,
+        # Jedes Ereignis in einem eigenen Savepoint: Scheitert eines an der
+        # Datenbank, zählt es als abgelehnt und der Rest des Stapels bleibt
+        # erhalten. Sonst verwirft Vector nach seinen Wiederholungen den
+        # ganzen Stapel (E-027).
+        try:
+            async with db.begin_nested():
+                stored = await store_event(db, event, ip_hash, origin)
+        except SQLAlchemyError as exc:
+            rejected["datenbankfehler"] += 1
+            logger.warning(
+                "ereignis nicht gespeichert",
+                extra={"eventid": event.eventid, "error": type(exc).__name__},
             )
-            .on_conflict_do_nothing(constraint="uq_events_dedup_hash")
-            .returning(Event.id)
-        )
-        if inserted is None:
-            duplicates += 1
             continue
 
-        if session_id is not None:
-            await apply_event(db, event, session_id)
-            if event.eventid == "cowrie.command.input":
-                await add_command(db, event, session_id)
-        accepted += 1
+        if stored:
+            accepted += 1
+        else:
+            duplicates += 1
 
     await db.commit()
 

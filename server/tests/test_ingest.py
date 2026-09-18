@@ -141,6 +141,64 @@ def test_one_line_per_event_also_works(client, cowrie_events):
     assert response.json()["accepted"] == 5
 
 
+def test_the_batch_as_vector_sent_it_is_accepted(client, cowrie_events):
+    """Array in Array, wie es mit payload_prefix "[" ankam (E-027)."""
+    body = json.dumps([cowrie_events[:10]]).encode("utf-8")
+    response = client.post(
+        "/ingest",
+        content=body,
+        headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+    )
+    assert response.status_code == 200
+    assert response.json()["accepted"] == 10
+
+
+def test_a_nul_byte_does_not_cost_the_batch(client, cowrie_events, migrated):
+    """PostgreSQL lehnt NUL ab. Vorher hätte das den ganzen Stapel gekostet."""
+    login = next(e for e in cowrie_events if e["eventid"] == "cowrie.login.failed")
+    poisoned = dict(login, username="ro\x00ot", timestamp="2026-09-17T15:30:00.000000Z")
+    body = send(client, [poisoned, *cowrie_events[:5]]).json()
+    assert body["accepted"] == 6, body
+
+    stored = scalar(
+        migrated,
+        select(func.count()).select_from(Session).where(Session.login_username == "ro\u2400ot"),
+    )
+    assert stored == 1
+
+
+def test_one_failing_event_does_not_take_the_rest_with_it(client, cowrie_events, migrated, monkeypatch):
+    """Scheitert ein Ereignis an der Datenbank, bleibt der Rest des Stapels."""
+    from sqlalchemy.exc import DataError
+
+    import app.ingest as ingest
+
+    original = ingest.apply_event
+    victim = cowrie_events[1]["session"]
+
+    async def failing(db, event, session_id):
+        if event.cowrie_session == victim:
+            raise DataError("simuliert", {}, Exception("simuliert"))
+        await original(db, event, session_id)
+
+    monkeypatch.setattr(ingest, "apply_event", failing)
+    batch = [e for e in cowrie_events if e["session"] in {victim, cowrie_events[0]["session"]}]
+    body = send(client, batch).json()
+
+    # Jedes Ereignis der betroffenen Sitzung scheitert, jedes andere kommt an.
+    victims = sum(1 for e in batch if e["session"] == victim)
+    assert body["reasons"] == {"datenbankfehler": victims}
+    assert body["accepted"] == len(batch) - victims
+    stored_victims = scalar(
+        migrated, select(func.count()).select_from(Event).where(Event.cowrie_session == victim)
+    )
+    stored_others = scalar(
+        migrated, select(func.count()).select_from(Event).where(Event.cowrie_session != victim)
+    )
+    assert stored_victims == 0
+    assert stored_others == len(batch) - victims
+
+
 # --- Abgeleitete Sitzungen --------------------------------------------------
 
 
