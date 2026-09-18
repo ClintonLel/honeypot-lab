@@ -48,6 +48,7 @@ bei der Übernahme ausformuliert.
 | E-028 | Worker: IPinfo-Download, Tagesstatistik, Aufräumen          | angenommen                                     |
 | E-029 | Live-Stream und Statistik-Endpunkte                         | angenommen                                     |
 | E-030 | Seite /lab: eigenes Projekt in Website-Demo, eigene Globus-Instanz | angenommen                              |
+| E-031 | Startseite als Projektseite mit Live-Karte des Labs         | angenommen                                     |
 
 ---
 
@@ -1319,3 +1320,55 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
 - Änderungen an `/lab` laufen wie die am Caddy-Block per Pull Request in
   Website-Demo. Die Pipeline dort baut und prüft `lab/` mit (Lint, Tests,
   Build) und fragt nach jedem Deploy `/lab` samt CSP ab.
+
+---
+
+## E-031: Startseite als Projektseite mit Live-Karte des Labs
+
+- Status: angenommen
+- Datum: 2026-09-18
+- Quelle: Schritt 5.3, Wunsch des Users, Pull Request `ClintonLel/Website-Demo#15`
+
+**Entscheidung:**
+
+- **Statt einer Kachel wird die Startseite eine Projektseite.** Oben eine
+  Karte je Projekt, darunter ein Abschnitt je Projekt. Die Texte zur Globe
+  Demo bleiben wörtlich erhalten, das Lab bekommt einen eigenen Abschnitt.
+  Alles auf einer Seite, auf Deutsch und Englisch.
+- **Die Karte des Labs ist live:**
+  - ein kleiner Globus als SVG, ohne three.js
+  - Sensorstatus und Sitzungen heute aus `/stats/overview`
+  - „zuletzt: Land, vor x s“ und ein Bogen je neuer Verbindung aus `/stream`
+- **Nur Zahlen und Ländercodes, keine Befehle.** Angreifer-Texte bleiben
+  auf `/lab`.
+- **Alles Live-Hafte steht mit `hidden` im HTML** und wird erst mit Daten
+  sichtbar.
+- **Derselbe Ländermittelpunkt wie auf `/lab`:** ein Test hält beide
+  Tabellen gleich.
+- **Die Content-Security-Policy von `/lab` gilt jetzt auch für die
+  Startseite.**
+
+**Begründung:**
+
+- Der Bauplan ging von einem bestehenden Projekt-Hub aus. Die Startseite war
+  aber eine Seite nur über die Globe Demo. Der User wollte, dass sie alle
+  Projekte zeigt und beide interaktiv bewirbt.
+- **Eine Seite statt Unterseiten:**
+  - Sprachumschaltung und QR-Code-Link bleiben unverändert.
+  - Das Gate braucht keine neuen Routen.
+  - Werden es mehr Projekte, lassen sich die langen Texte später auslagern.
+- **Kein Framework und kein Build für die Startseite.** Sie wird oft über
+  den QR-Code im Mobilfunknetz geöffnet. Ein ES-Modul von wenigen KB und ein
+  SVG von 11 kB (komprimiert) halten sie schnell.
+- **Keine Befehle auf der Startseite:** Die Regel „Angreifer-Texte nur als
+  Text“ muss dann nur eine Seite einhalten, und die Startseite braucht keine
+  eigene Prüfung dafür.
+
+**Konsequenzen:**
+
+- **Stream-Plätze:** Die Startseite belegt nur einen Platz des Verteilers
+  (E-029), solange die Lab-Karte zu sehen und der Tab offen ist.
+- **Quellenhinweis:** IPinfo Lite und Natural Earth stehen jetzt auch im
+  Footer der Startseite.
+- **Neue Projekte:** Ein neues Projekt bekommt eine weitere Karte und einen
+  Abschnitt, in beiden Sprachfassungen (`docs/DEPLOYMENT.md` in Website-Demo).

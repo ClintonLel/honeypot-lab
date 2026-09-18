@@ -70,9 +70,11 @@ unter `lab/`, ausgeliefert von `gate` (E-020, E-030).
   genutzt und dann gehasht. Die Seite setzt keine Cookies und lädt nichts von
   Dritten. Das Rate-Limit der API nutzt einen Hash, der nur im Speicher liegt.
 
-## Kachel im Projekt-Hub (Schritt 5.3)
+## Karte auf der Startseite (Schritt 5.3)
 
-Kleiner Globus-Ausschnitt, Titel „Honeypot-Lab“, eine Zeile Kontext
-(„Feldexperiment: klassische Shell gegen KI-Shell“) und die heutige Zahl der
-Sitzungen aus `/stats/overview`. Verlinkt auf /lab und bleibt ohne API
-vollständig nutzbar.
+Auf Wunsch erweitert: Die Startseite ist eine Projektseite mit einer Karte je
+Projekt (E-031). Die Karte des Labs zeigt einen kleinen Globus als SVG, den
+Sensorstatus, die Sitzungen heute aus `/stats/overview` und einen Bogen je
+neuer Verbindung aus `/stream`, dazu „zuletzt: Land, vor x s“. Nur Zahlen und
+Ländercodes, keine Befehle. Sie verlinkt auf /lab und auf den Abschnitt zum Lab
+weiter unten und bleibt ohne API oder JavaScript vollständig nutzbar.
