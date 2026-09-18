@@ -239,6 +239,24 @@ Prüfen, dass der Endpunkt antwortet und keine Adresse enthält:
 curl -s https://api.tomkaufmann.dev/stats/recent | python3 -m json.tool | head -20
 ```
 
+**Ergebnis am 2026-09-18:**
+
+- **API:** 212 Tests grün im Container. `/stats/recent` antwortet mit 12
+  Befehlen, die längste Vorschau hat genau 80 Zeichen, und es steht keine
+  IPv4 darin, weder im Klartext noch entschärft.
+- **Pipeline:** Website-Demo#14 ist gemergt (`1a0b935`), alle Jobs der
+  Pipeline sind grün. Der Smoke-Test meldet `/lab ohne Cookie: 200, mit CSP`,
+  `/demo/` leitet weiter mit 302 auf `/login` um.
+- **Seite von außen:**
+  - Headless-Chrome bei 360 px und doppelter Pixeldichte: kein seitliches
+    Scrollen, „Sensor online“, 1.296 Sitzungen heute, Stream live.
+  - Die Liste „Letzte Befehle“ ist sofort voll, Exec-Aufrufe liegen bei
+    99,7 %.
+  - Der Weg über CORS zu `api.tomkaufmann.dev` funktioniert, und unter der
+    CSP gibt es keine Verstöße.
+- **Unverändert:** Shop-Demo, Landingpage und Caddyfile sind laut `git diff`
+  gegenüber `main` nicht angefasst.
+
 ## Worker (Schritt 4.3)
 
 | Job          | Takt      | Was er tut                                                        |
