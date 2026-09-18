@@ -4,8 +4,8 @@ Uvicorn startet die App als Factory (``app.main:create_app --factory``). So
 liest niemand beim bloßen Import die Einstellungen, und Tests bauen sich ihre
 eigene App mit eigenen Werten.
 
-Im Moment nur ``GET /health``. Ingest, Stream und Statistik kommen in den
-Schritten 4.1 und 5.1.
+Endpunkte: ``GET /health``, ``POST /ingest`` (Schritt 4.1), ``GET /stream``
+und ``GET /stats/*`` (Schritt 5.1).
 
 Erreichbar ist die App ausschließlich über Caddy auf
 ``https://api.tomkaufmann.dev`` (E-021). CORS setzt Caddy, nicht diese App,
@@ -18,6 +18,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -29,6 +30,11 @@ from app.db import create_engine, create_session_factory
 from app.enrichment import Enricher
 from app.ingest import router as ingest_router
 from app.logging import configure_logging
+from app.ratelimit import RateLimiter
+from app.stats import TTLCache
+from app.stats import router as stats_router
+from app.stream import Broadcaster
+from app.stream import router as stream_router
 
 logger = logging.getLogger("lab.api")
 
@@ -106,6 +112,15 @@ def create_app() -> FastAPI:
         )
         return response
 
+    # Zustand, den mehrere Endpunkte teilen. Er lebt im Speicher dieses einen
+    # Prozesses (E-029).
+    app.state.broadcaster = Broadcaster()
+    app.state.limiter = RateLimiter()
+    app.state.stats_cache = TTLCache()
+    app.state.clock = lambda: datetime.now(timezone.utc)
+
     app.include_router(router)
     app.include_router(ingest_router)
+    app.include_router(stream_router)
+    app.include_router(stats_router)
     return app

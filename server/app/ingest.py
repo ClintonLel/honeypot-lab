@@ -31,6 +31,7 @@ from app.enrichment import Enricher, Origin
 from app.events import MAX_BATCH, EventRejected, NormalizedEvent, normalize
 from app.hashing import hash_ip
 from app.models import Command, Event, Session
+from app.stream import publish_stored
 
 logger = logging.getLogger("lab.ingest")
 router = APIRouter()
@@ -275,6 +276,8 @@ async def ingest(
 
     accepted = duplicates = 0
     rejected: Counter[str] = Counter()
+    # Neu gespeicherte Ereignisse mit Land, für den Stream nach dem Commit.
+    fresh: list[tuple[NormalizedEvent, str | None]] = []
 
     for raw in raw_events:
         try:
@@ -306,10 +309,13 @@ async def ingest(
 
         if stored:
             accepted += 1
+            fresh.append((event, origin.country))
         else:
             duplicates += 1
 
     await db.commit()
+    # Erst nach dem Commit: Was im Stream erscheint, steht auch in der Datenbank.
+    streamed = publish_stored(request, fresh)
 
     logger.info(
         "ingest",
@@ -318,6 +324,7 @@ async def ingest(
             "duplicates": duplicates,
             "rejected": sum(rejected.values()),
             "reasons": dict(rejected),
+            "stream": streamed,
         },
     )
     return {

@@ -46,6 +46,7 @@ bei der Übernahme ausformuliert.
 | E-026 | Ingest-Token über Vectors Secrets-Backend                   | angenommen                                     |
 | E-027 | Stapelform, rotierte Dateien, NUL-Bytes, Savepoints         | angenommen                                     |
 | E-028 | Worker: IPinfo-Download, Tagesstatistik, Aufräumen          | angenommen                                     |
+| E-029 | Live-Stream und Statistik-Endpunkte                         | angenommen                                     |
 
 ---
 
@@ -1197,3 +1198,57 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
   `all`. Sitzungen ohne Land zählen unter `??`.
 - Unsere eigenen Testsitzungen sind noch mitgezählt. Sie fallen in Schritt 7.1
   heraus.
+
+---
+
+## E-029: Live-Stream und Statistik-Endpunkte
+
+- Status: angenommen
+- Datum: 2026-09-18
+- Quelle: Schritt 5.1
+
+**Entscheidung:**
+
+- **Stream über einen Verteiler im Speicher.** Der Ingest meldet jedes neu
+  gespeicherte Ereignis nach dem Commit. Jeder Client hat eine eigene
+  Warteschlange mit 100 Plätzen, bei Überlauf fällt die älteste Meldung weg.
+  Höchstens 200 Clients insgesamt.
+- **Meldung:** `ts`, `variant`, `country`, `event` und bei Befehlen `command`,
+  eine Vorschau von höchstens 80 Zeichen. Keine Sitzungs-ID, kein Hash.
+  Gestreamt werden nur Verbindung, Login, fehlgeschlagener Login, Befehl,
+  Download und Sitzungsende.
+- **„Ohne IPs“** heißt: Die Adresse des Angreifers erscheint nie, auch nicht
+  entschärft. Adressen Dritter in Befehlen erscheinen nur entschärft.
+- **Statistik aus `daily_stats`**, nur „heute“ in der Übersicht live aus
+  `sessions`. Jede Antwort 30 Sekunden im Speicher und mit
+  `Cache-Control: public, max-age=30`.
+- **Rate-Limit:** 60 Statistik-Anfragen pro Minute und höchstens 3 offene
+  Streams je Client. Der Client wird über den ersten Eintrag in
+  `X-Forwarded-For` erkannt, das Caddy selbst setzt. Als Schlüssel dient ein
+  Hash mit einem Zufallswert je Prozess, nie die Adresse.
+
+**Begründung:**
+
+- Ein Verteiler im Speicher ist das Einfachste, das trägt. Die API läuft als
+  ein einziger uvicorn-Prozess, und der Stream muss keine Geschichte liefern,
+  nur das, was ab jetzt passiert.
+- Die Warteschlange je Client entkoppelt: Ein langsamer Browser bremst weder
+  den Ingest noch andere Besucher.
+- Erst nach dem Commit zu melden heißt, dass nichts im Stream erscheint, was
+  nicht auch in der Datenbank steht. Dubletten beim Neueinlesen erscheinen
+  nicht, sie werden ja nicht gespeichert.
+- Auch Besucheradressen sind IPs (E-009). Der Hash mit Zufallswert erlaubt ein
+  Limit pro Client, ohne dass eine Adresse irgendwo stehen bleibt.
+
+**Konsequenzen:**
+
+- Läuft die API einmal mit mehreren Prozessen, muss PostgreSQL
+  `LISTEN/NOTIFY` den Verteiler ersetzen. Heute steht im Dockerfile kein
+  `--workers`.
+- Nach einem Neustart der API verbinden sich Browser selbst neu (`retry:
+  5000`). Was in der Zwischenzeit geschah, sehen sie im Stream nicht, nur in
+  der Statistik.
+- Die Seite `/lab` muss Befehle ausschließlich per `textContent` einsetzen
+  (README „Harte Regeln“, Schritt 5.2). Entschärft heißt nicht harmlos für
+  HTML.
+- Unsere eigenen Testsitzungen zählen in der Statistik noch mit (Schritt 7.1).

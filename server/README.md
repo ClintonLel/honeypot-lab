@@ -14,6 +14,9 @@ die API über Caddy erreichbar (E-021).
 | `app/events.py`             | Ereignisse prüfen, Adressen entfernen, Felder ziehen        |
 | `app/defang.py`             | URLs und Adressen entschärfen (hxxp, [.])                  |
 | `app/enrichment.py`         | Land und Netzbetreiber aus der IPinfo-Lite-Datenbank        |
+| `app/stream.py`             | `GET /stream`: Live-Ereignisse als Server-Sent Events       |
+| `app/stats.py`              | `GET /stats/*`: Übersicht, Länder, Heatmap, Exec/interaktiv, Kampagnen |
+| `app/ratelimit.py`          | Rate-Limit pro Client, Schlüssel ohne Adresse               |
 | `app/config.py`             | Einstellungen aus Umgebungsvariablen, Secrets als `SecretStr` |
 | `app/db.py`                 | Engine und Sessions (SQLAlchemy 2, psycopg 3, asynchron)    |
 | `app/models.py`             | die sieben Tabellen aus Schritt 3.3                        |
@@ -175,6 +178,32 @@ cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml ps
 
 ```bash
 sudo docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}'
+```
+
+## Stream und Statistik (Schritt 5.1)
+
+| Endpunkt                               | Inhalt                                                  |
+|----------------------------------------|---------------------------------------------------------|
+| `GET /stream`                          | Server-Sent Events: `ts`, `variant`, `country`, `event`, bei Befehlen `command` (höchstens 80 Zeichen, entschärft) |
+| `GET /stats/overview`                  | Sensor online, heute und gesamt je Variante: Sitzungen, Logins, Befehle |
+| `GET /stats/countries?days=30`         | Sitzungen je Land und Variante, die 50 häufigsten      |
+| `GET /stats/heatmap?days=28&variant=all` | 7 × 24, Montag bis Sonntag, Stunde in UTC             |
+| `GET /stats/breakdown?days=30`         | je Variante: interaktiv, Exec, ohne Befehl              |
+| `GET /stats/campaigns`                 | die 10 größten Kampagnen (ab Schritt 6.2)              |
+
+Statistik wird 30 Sekunden gecacht, 60 Anfragen pro Minute und höchstens 3
+offene Streams je Client (E-029).
+
+Den Stream von außen ansehen (Abbruch mit Strg-C):
+
+```bash
+curl -N https://api.tomkaufmann.dev/stream
+```
+
+Die Übersicht:
+
+```bash
+curl -s https://api.tomkaufmann.dev/stats/overview | python3 -m json.tool
 ```
 
 ## Worker (Schritt 4.3)

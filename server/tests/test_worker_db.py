@@ -8,17 +8,13 @@ eingetragen.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import date, datetime, timezone
 
 import pytest
 from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import NullPool
 
-from app.config import Settings
 from app.models import Command, DailyStat, Event, Session
-from tests.conftest import send
+from tests.conftest import make_ctx, run, send
 from worker import jobs
 
 pytestmark = pytest.mark.db
@@ -33,23 +29,6 @@ def ingested(client, cowrie_events):
     response = send(client, cowrie_events)
     assert response.json()["rejected"] == 0
     return cowrie_events
-
-
-def make_ctx(database_url: str, now: datetime) -> jobs.Context:
-    # NullPool: Jeder Aufruf läuft in einer eigenen Ereignisschleife, gepoolte
-    # Verbindungen dürfen nicht hinüberwandern.
-    engine = create_async_engine(database_url, poolclass=NullPool)
-    return jobs.Context(settings=Settings(environment="test"), engine=engine, now=lambda: now)
-
-
-def run(coro_fn, ctx, **kwargs):
-    async def call():
-        try:
-            return await coro_fn(ctx, **kwargs)
-        finally:
-            await ctx.engine.dispose()
-
-    return asyncio.run(call())
 
 
 def stat(engine, metric: str, variant: str = "a", dimension: str = "", day: date = DAY):

@@ -157,3 +157,32 @@ def client(migrated, database_url: str, monkeypatch):
 
 def send(client, events, token: str = TOKEN):
     return client.post("/ingest", json=events, headers={"Authorization": f"Bearer {token}"})
+
+
+# --- Worker-Jobs in Tests ------------------------------------------------------
+
+
+def make_ctx(database_url: str, now):
+    """Kontext für einen Worker-Job gegen die Testdatenbank, mit fester Uhr."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from worker import jobs
+
+    # NullPool: Jeder Aufruf läuft in einer eigenen Ereignisschleife, gepoolte
+    # Verbindungen dürfen nicht hinüberwandern.
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    return jobs.Context(settings=Settings(environment="test"), engine=engine, now=lambda: now)
+
+
+def run(coro_fn, ctx, **kwargs):
+    """Führt einen Job synchron aus und gibt die Verbindungen danach frei."""
+    import asyncio
+
+    async def call():
+        try:
+            return await coro_fn(ctx, **kwargs)
+        finally:
+            await ctx.engine.dispose()
+
+    return asyncio.run(call())
