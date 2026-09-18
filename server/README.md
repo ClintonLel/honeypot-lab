@@ -206,6 +206,21 @@ Die Übersicht:
 curl -s https://api.tomkaufmann.dev/stats/overview | python3 -m json.tool
 ```
 
+**Ergebnis am 2026-09-18:** 208 Tests grün im Container. Von außen mitgeschnitten
+kam eine eigene Testsitzung vollständig im Stream an (`connect`, `login`,
+`command`, `closed`), die URL im Befehl entschärft
+(`hxxp://example[.]test/lab-test.sh`). Im Mitschnitt stand keine einzige
+Klartext-IPv4, und weder die Adresse des Sensors noch die des eigenen
+Anschlusses, auch nicht entschärft. Alle Statistik-Endpunkte antworten mit
+`Cache-Control: public, max-age=30`.
+
+Stand der Statistik an diesem Tag, als Anhaltspunkt für Phase 7:
+
+- 2.436 Sitzungen seit 2026-09-17, davon 3 interaktiv (zwei davon eigene
+  Persona-Tests von `127.0.0.1`), 761 Exec-Aufrufe, 1.672 ohne Befehl.
+- Rund drei Viertel der Sitzungen aus den Niederlanden (1.806), mit Abstand
+  gefolgt von DE (143) und GB (103).
+
 ## Worker (Schritt 4.3)
 
 | Job          | Takt      | Was er tut                                                        |
