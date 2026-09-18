@@ -257,6 +257,28 @@ curl -s https://api.tomkaufmann.dev/stats/recent | python3 -m json.tool | head -
 - **Unverändert:** Shop-Demo, Landingpage und Caddyfile sind laut `git diff`
   gegenüber `main` nicht angefasst.
 
+## Startseite als Projektseite (Schritt 5.3)
+
+Statt einer Kachel ist die Startseite `tomkaufmann.dev` jetzt eine
+Projektseite mit einer Karte je Projekt (E-031). Die Karte des Labs liest
+`/stats/overview`, `/stats/countries?days=7` und `/stream`, zeigt aber nur
+Zahlen und Länder, keine Befehle.
+
+**Ergebnis am 2026-09-18:**
+
+- **Pipeline:** Website-Demo#15 ist gemergt (`1b3d737`), alle Jobs der
+  Pipeline sind grün.
+- **Von außen:**
+  - `/` und `/en` antworten mit CSP.
+  - `/login` bleibt ohne CSP, `/demo/` leitet weiter mit 302 um.
+  - `hub.js` und `globe.svg` kommen mit dem richtigen Typ.
+- **Headless-Chrome bei 360 px:**
+  - „Sensor online“, 1.562 Sitzungen heute und „latest: India, just now“.
+  - Ein Live-Bogen aus Indien ist gezeichnet, der Weg über CORS zur API
+    funktioniert also.
+  - Kein seitliches Scrollen.
+- **Ohne API** (lokal geprüft) bleiben beide Karten vollständig.
+
 ## Worker (Schritt 4.3)
 
 | Job          | Takt      | Was er tut                                                        |
