@@ -11,3 +11,5 @@ alembic==1.20.0
 # Liest die IPinfo-Lite-Datenbank (Schritt 4.1 und 4.3).
 maxminddb==3.2.0
 pydantic-settings==2.15.0
+# Liest die ATT&CK-Regeln aus rules/attack.yml (Schritt 6.1). Wie in der Sensor-CI.
+pyyaml==6.0.3

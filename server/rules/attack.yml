@@ -1,0 +1,95 @@
+# MITRE ATT&CK Enterprise v19.2 (veröffentlicht 2026-04-28).
+# IDs, Namen und Taktiken am 2026-09-29 auf attack.mitre.org geprüft.
+#
+# Regeln für Schritt 6.1: Befehl -> ATT&CK-Technik (E-037). app/attack.py
+# lädt die Datei beim Start der API und im Worker-Job attack. Ein Befehl kann mehrere
+# Techniken treffen; ohne Treffer bleibt er ohne Tag.
+#
+# Die Muster laufen auf dem gespeicherten Befehl, also schon gekürzt, ohne
+# Adresse des Angreifers und entschärft: "hxxp://", "198[.]51[.]100[.]7".
+# Groß- und Kleinschreibung zählt, wie in der Shell.
+#
+# Zwei Platzhalter setzt der Loader ein:
+#   {cmd}  Befehlsanfang: Zeilenanfang oder nach ; & | ( { ` $( und Leerraum,
+#          optional ein Vorsatz (sudo, busybox, nohup, exec, command, then,
+#          do, else) und ein fester Pfad (/bin/, /usr/bin/, /usr/local/sbin/ …).
+#   {end}  Das Befehlswort endet hier: Leerraum, ; & | ) } ` < > oder Ende.
+#
+# Gegen ReDoS (der Loader prüft das und lehnt sonst die ganze Datei ab):
+#   - keine Wiederholung in einer Wiederholung, etwa (a+)+
+#   - keine Rückverweise
+#   - Wiederholungen über Zeichenklassen vor einem Literal beschränken: {0,256}
+#   - höchstens 512 Zeichen je Muster; der Befehl wird auf 4096 Zeichen gekürzt
+#
+# Muster in einfachen Anführungszeichen: Backslashes bleiben, wie sie sind,
+# ein einfaches Anführungszeichen wird verdoppelt ('').
+
+attack_version: "19.2"
+
+rules:
+  - id: T1082
+    name: System Information Discovery
+    tactics: [Discovery]
+    reason: Kernel, CPU, Speicher und Distribution abfragen, meist um die passende Nutzlast zu wählen.
+    patterns:
+      - '{cmd}(?:uname|lscpu|hostnamectl|nproc){end}'
+      - '/proc/(?:cpuinfo|meminfo|version)\b'
+      - '/etc/(?:os-release|lsb-release|issue)\b'
+
+  - id: T1033
+    name: System Owner/User Discovery
+    tactics: [Discovery]
+    reason: Prüfen, als welcher Benutzer die Shell läuft, etwa ob Root-Rechte da sind.
+    patterns:
+      - '{cmd}(?:whoami|id|who){end}'
+
+  - id: T1098.004
+    name: 'Account Manipulation: SSH Authorized Keys'
+    tactics: [Persistence, Privilege Escalation]
+    reason: Einen eigenen Schlüssel in authorized_keys schreiben, um ohne Passwort wiederzukommen.
+    patterns:
+      - '>>?\s*[\w./~$"''{}-]{0,256}authorized_keys'
+      - '{cmd}tee(?:\s+(?:-a|--append))?\s+[\w./~$"''{}-]{0,256}authorized_keys'
+
+  - id: T1222.002
+    name: 'File and Directory Permissions Modification: Linux and Mac Permissions'
+    tactics: [Defense Impairment]
+    reason: Rechte oder Attribute an .ssh ändern, damit der eigene Schlüssel greift oder nicht entfernt werden kann.
+    patterns:
+      - '{cmd}(?:chattr|chmod)(?=\s)[^;&|\n]{0,256}[\s/"'']\.ssh\b'
+
+  - id: T1105
+    name: Ingress Tool Transfer
+    tactics: [Command and Control]
+    reason: Werkzeuge oder Skripte von außen nachladen. curl nur mit Ausgabedatei oder Pipe in eine Shell, sonst ist es meist eine Abfrage.
+    patterns:
+      - '{cmd}(?:wget|tftp){end}'
+      - '{cmd}curl(?=\s)[^;&|\n]{0,512}\s(?:-[a-zA-Z]{0,8}[oO]|--output|--remote-name(?:-all)?){end}'
+      - '{cmd}curl(?=\s)[^;&\n]{0,512}\|\s*(?:sudo\s+)?(?:ba|da|z)?sh{end}'
+
+  - id: T1057
+    name: Process Discovery
+    tactics: [Discovery]
+    reason: Laufende Prozesse ansehen, etwa um konkurrierende Miner oder Überwachung zu finden.
+    patterns:
+      - '{cmd}(?:ps|pgrep|pidof|top){end}'
+
+  - id: T1053.003
+    name: 'Scheduled Task/Job: Cron'
+    tactics: [Execution, Persistence, Privilege Escalation]
+    reason: Einen Cron-Eintrag anlegen, damit die Nutzlast regelmäßig oder nach einem Neustart wieder läuft. Nur Lesen (crontab -l) zählt nicht.
+    patterns:
+      - '{cmd}crontab(?!\s+-[lr]{end}){end}'
+      - '>>?\s*/(?:etc/cron|var/spool/cron)'
+
+  - id: T1070.003
+    name: 'Indicator Removal: Clear Command History'
+    tactics: [Stealth]
+    reason: Die Befehlshistorie leeren oder abschalten, um Spuren zu verwischen.
+    patterns:
+      - '{cmd}history\s+-c{end}'
+      - '{cmd}unset(?=\s)[^;&|\n]{0,64}\bHIST(?:FILE|SIZE)\b'
+      - '\bHISTFILE=/dev/null\b'
+      - '\bHIST(?:FILE)?SIZE=0\b'
+      - '(?<!>)>(?!>)\s*[\w./~$"''{}-]{0,128}\.bash_history\b'
+      - '{cmd}(?:rm|shred)(?=\s)[^;&|\n]{0,256}\.bash_history\b'

