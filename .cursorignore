@@ -22,6 +22,12 @@ cowrie.json*
 tty/
 downloads/
 
+# --- OpenTofu-State und -Variablen (Sensor-IP, User Data) --------------------
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+
 # --- Abhängigkeiten und Build ------------------------------------------------
 node_modules/
 dist/

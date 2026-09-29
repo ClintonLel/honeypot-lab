@@ -50,7 +50,8 @@ bei der Übernahme ausformuliert.
 | E-030 | Seite /lab: eigenes Projekt in Website-Demo, eigene Globus-Instanz | angenommen                              |
 | E-031 | Startseite als Projektseite mit Live-Karte des Labs         | angenommen                                     |
 | E-032 | Regeln für Coding-Agenten in AGENTS.md                      | angenommen, Sperrlisten ergänzt durch E-033    |
-| E-033 | Rohdaten und weitere .env-Dateien für Agenten sperren       | angenommen                                     |
+| E-033 | Rohdaten und weitere .env-Dateien für Agenten sperren       | angenommen, Sperrlisten ergänzt durch E-034    |
+| E-034 | OpenTofu-State und -Variablen für Agenten sperren           | angenommen                                     |
 
 ---
 
@@ -1429,7 +1430,7 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
 
 ## E-033: Rohdaten und weitere .env-Dateien für Agenten sperren
 
-- Status: angenommen
+- Status: angenommen, Sperrlisten ergänzt durch E-034
 - Datum: 2026-09-29
 - Quelle: Wunsch des Users, offener Punkt aus E-032
 
@@ -1461,3 +1462,34 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
   erzeugt neue auf dem Sensor (sensor/README.md).
 - Weiter offen: Die Deny-Regeln gelten nur für das Read-Tool, nicht für die
   Shell (E-032).
+
+---
+
+## E-034: OpenTofu-State und -Variablen für Agenten sperren
+
+- Status: angenommen
+- Datum: 2026-09-29
+- Quelle: Wunsch des Users, nach dem Commit der OpenTofu-Dateien (E-013)
+
+**Entscheidung:** `.cursorignore` und die Deny-Regeln in
+`.claude/settings.json` sperren zusätzlich `*.tfstate`, `*.tfstate.*`,
+`*.tfvars` und `*.tfvars.json`. In `.gitignore` stehen diese Muster bereits
+(E-013).
+
+**Begründung:**
+
+- Der State enthält IDs, die IPs des Sensors und die komplette User Data aus
+  `cloud-init.yaml` (`infra/README.md`). `*.tfstate.*` erfasst auch
+  `terraform.tfstate.backup` mit demselben Inhalt.
+- In `*.tfvars` stehen lokale Werte wie die Admin-Adressen aus
+  `admin_source_ips`.
+- Die Sensor-IP soll nicht beim Anbieter eines Modells landen. Aus demselben
+  Grund ersetzt `make-fixtures.py` sie in den Beispiel-Logs.
+
+**Konsequenzen:**
+
+- Agenten können `.tf`-Dateien, `infra/README.md` und `.terraform.lock.hcl`
+  weiter lesen, den State nicht. Fragen zum aktuellen Aufbau beantwortet
+  `tofu output` oder `tofu state list` im Terminal, nicht ein Agent.
+- Nicht gesperrt sind gespeicherte Pläne (`*.tfplan`) und der Ordner
+  `.terraform/`. Beide stehen nur in `.gitignore`.
