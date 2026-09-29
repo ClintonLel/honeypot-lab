@@ -49,7 +49,8 @@ bei der Übernahme ausformuliert.
 | E-029 | Live-Stream und Statistik-Endpunkte                         | angenommen                                     |
 | E-030 | Seite /lab: eigenes Projekt in Website-Demo, eigene Globus-Instanz | angenommen                              |
 | E-031 | Startseite als Projektseite mit Live-Karte des Labs         | angenommen                                     |
-| E-032 | Regeln für Coding-Agenten in AGENTS.md                      | angenommen                                     |
+| E-032 | Regeln für Coding-Agenten in AGENTS.md                      | angenommen, Sperrlisten ergänzt durch E-033    |
+| E-033 | Rohdaten und weitere .env-Dateien für Agenten sperren       | angenommen                                     |
 
 ---
 
@@ -1378,7 +1379,7 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
 
 ## E-032: Regeln für Coding-Agenten in AGENTS.md
 
-- Status: angenommen
+- Status: angenommen, Sperrlisten ergänzt durch E-033
 - Datum: 2026-09-29
 - Quelle: Wunsch des Users
 
@@ -1423,3 +1424,40 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
   `.env.local` erfassen sie nicht.
 - Offen: `.cursorignore` enthält die Rohdaten des Honeypots (`cowrie.json*`,
   `tty/`, `downloads/`) noch nicht. Sie stehen bisher nur in `.gitignore`.
+
+---
+
+## E-033: Rohdaten und weitere .env-Dateien für Agenten sperren
+
+- Status: angenommen
+- Datum: 2026-09-29
+- Quelle: Wunsch des Users, offener Punkt aus E-032
+
+**Entscheidung:**
+
+- `.cursorignore` enthält zusätzlich die Rohdaten des Honeypots:
+  `cowrie.json*`, `tty/` und `downloads/`.
+- `.claude/settings.json` verbietet zusätzlich `Read(**/.env.local)`,
+  `Read(**/.env.production)`, `Read(**/cowrie.json*)`, `Read(**/tty/**)` und
+  `Read(**/downloads/**)`.
+- `.gitignore` enthält jetzt auch `dist/`. Damit steht alles, was
+  `.cursorignore` und die Deny-Regeln sperren, auch in `.gitignore`.
+
+**Begründung:**
+
+- `cowrie.json` enthält Klartext-IPs, tty-Mitschnitte enthalten
+  Angreifer-Eingaben, `downloads/` enthält Malware. Liest ein Agent sie, landen
+  Klartext-IPs beim Anbieter des Modells, und das verletzt die erste harte
+  Regel.
+- Rohdaten gehören nicht auf den Laptop: `sensor/scripts/make-fixtures.py`
+  läuft auf dem Sensor und ersetzt die Adressen der Beteiligten, bevor
+  Beispiele nach `server/tests/fixtures` kommen. Liegt trotzdem eine Kopie im
+  Repo-Ordner, soll kein Agent sie lesen.
+
+**Konsequenzen:**
+
+- Agenten können echte Rohdaten nicht mehr per Read-Tool lesen. Wer
+  Beispiele braucht, nimmt die Fixtures in `server/tests/fixtures` oder
+  erzeugt neue auf dem Sensor (sensor/README.md).
+- Weiter offen: Die Deny-Regeln gelten nur für das Read-Tool, nicht für die
+  Shell (E-032).

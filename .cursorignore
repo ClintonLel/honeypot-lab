@@ -17,6 +17,11 @@ server/.env
 dumps/
 backups/
 
+# --- Honeypot-Rohdaten (Klartext-IPs, Angreifer-Eingaben, Malware) ----------
+cowrie.json*
+tty/
+downloads/
+
 # --- Abhängigkeiten und Build ------------------------------------------------
 node_modules/
 dist/
