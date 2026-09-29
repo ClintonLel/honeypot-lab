@@ -16,6 +16,8 @@ die API über Caddy erreichbar (E-021).
 | `app/enrichment.py`         | Land und Netzbetreiber aus der IPinfo-Lite-Datenbank        |
 | `app/stream.py`             | `GET /stream`: Live-Ereignisse als Server-Sent Events       |
 | `app/stats.py`              | `GET /stats/*`: Übersicht, Länder, Heatmap, Exec/interaktiv, Kampagnen |
+| `app/attack.py`             | ATT&CK-Regeln laden, prüfen (ReDoS) und auf Befehle anwenden |
+| `rules/attack.yml`          | die Regeln selbst: Muster → Technik, mit ATT&CK-Version (Schritt 6.1) |
 | `app/ratelimit.py`          | Rate-Limit pro Client, Schlüssel ohne Adresse               |
 | `app/config.py`             | Einstellungen aus Umgebungsvariablen, Secrets als `SecretStr` |
 | `app/db.py`                 | Engine und Sessions (SQLAlchemy 2, psycopg 3, asynchron)    |
@@ -24,7 +26,7 @@ die API über Caddy erreichbar (E-021).
 | `app/logging.py`            | JSON-Logs                                                  |
 | `app/migrations/`           | Alembic, `0001_grundschema.py` legt alles an               |
 | `worker/main.py`            | Zeitplan und Einzelläufe der Jobs                          |
-| `worker/jobs.py`            | `ipinfo`, `statistik`, `aufraeumen` (Schritt 4.3)          |
+| `worker/jobs.py`            | `ipinfo`, `statistik`, `aufraeumen` (Schritt 4.3), `attack` (6.1) |
 | `tests/`                    | Tests ohne Datenbank und, mit Marker `db`, mit Datenbank   |
 | `../docker-compose.server.yml` | `db`, `api`, `worker` mit Limits und Netzen              |
 
@@ -345,6 +347,39 @@ deshalb root. So bekommt es den richtigen Eigentümer:
 ```bash
 sudo docker run --rm --user 0 -v honeypot-lab_ipinfo:/data honeypot-lab-api:local chown 10001:10001 /data
 ```
+
+## ATT&CK-Techniken (Schritt 6.1)
+
+Jeder Befehl bekommt beim Ingest die Techniken, die er nach
+`rules/attack.yml` trifft, in `commands.techniques` (E-037). Stream und
+`/stats/recent` geben sie als zusätzliches Feld `techniques` aus, etwa
+`["T1082", "T1105"]`. Ohne Treffer ist die Liste leer.
+
+Die Regeln sind Daten. Eine Änderung braucht keinen neuen Code, aber einen
+neuen Build, weil die Datei im Image liegt. Eine kaputte Regeldatei, etwa
+mit einem Muster wie `(a+)+`, lässt die API gar nicht erst starten.
+
+**Nachtaggen** nach einer Regeländerung oder für Befehle von vor Schritt 6.1.
+Der Job `attack` läuft nur von Hand, nicht im Zeitplan und nicht bei `run alle`.
+`<PFAD>` steht für das Projektverzeichnis auf dem Hauptserver:
+
+```bash
+cd <PFAD> && sudo docker compose -f docker-compose.server.yml exec worker python -m worker.main run attack
+```
+
+Das Ergebnis steht im Log: `geprueft`, `geaendert` und `attack_version`.
+
+**Report der häufigsten Befehle ohne Technik.** Taggt erst neu und gibt dann
+die 100 häufigsten Befehle ohne Treffer mit ihrer Anzahl aus:
+
+```bash
+cd <PFAD> && sudo docker compose -f docker-compose.server.yml exec worker python -m worker.main run attack --bericht
+```
+
+Die Ausgabe geht nur ins Terminal, nicht ins Log. Sie ist Angreifertext:
+entschärft, auf 200 Zeichen gekürzt und mit sichtbar gemachten Steuerzeichen
+(`\x1b` statt Escape-Sequenz). Trotzdem nur lesen, nichts daraus kopieren und
+ausführen, und nicht ungeprüft an einen Coding-Agenten geben.
 
 ## Hinweise
 

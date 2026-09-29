@@ -114,3 +114,45 @@ def test_the_loop_runs_each_due_job_once_and_stops(monkeypatch):
 
     asyncio.run(asyncio.wait_for(main.run_forever(ctx, stopping), timeout=5))
     assert runs == ["eins", "zwei"]
+
+
+# --- ATT&CK-Job (Schritt 6.1) ---------------------------------------------------
+
+
+def test_the_attack_job_runs_only_on_request():
+    assert main.ATTACK not in JOBS
+    assert main.BY_NAME["attack"] is main.ATTACK
+
+
+def test_the_report_is_only_for_the_attack_job(capsys):
+    import pytest
+
+    with pytest.raises(SystemExit):
+        asyncio.run(main.main(["run", "statistik", "--bericht"]))
+    assert "--bericht" in capsys.readouterr().err
+
+
+def test_control_characters_cannot_steer_the_terminal():
+    shown = main.printable("echo \x1b[2J\x1b]0;x\x07\r\nfertig\x00")
+    assert "\x1b" not in shown and "\x07" not in shown and "\r" not in shown and "\x00" not in shown
+    assert "\\x1b[2J" in shown
+    assert shown.isprintable()
+
+
+def test_long_commands_are_cut_in_the_report():
+    shown = main.printable("x" * 500)
+    assert len(shown) == main.REPORT_WIDTH and shown.endswith("…")
+
+
+def test_the_report_names_counts_and_share():
+    text = main.format_report(
+        {"befehle": 10, "ohne_technik": 4, "haeufigste": [("ls -la", 3), ("echo \x1b[31m", 1)]}
+    )
+    lines = text.splitlines()
+    assert lines[0] == "Befehle gesamt: 10, ohne ATT&CK-Technik: 4 (40%)"
+    assert lines[2].split() == ["3", "ls", "-la"]
+    assert "\x1b" not in text
+
+
+def test_an_empty_report_does_not_divide_by_zero():
+    assert "(–)" in main.format_report({"befehle": 0, "ohne_technik": 0, "haeufigste": []})

@@ -10,7 +10,7 @@ Prozess läuft (E-029). Mit mehreren Prozessen müsste PostgreSQL LISTEN/NOTIFY
 an seine Stelle treten.
 
 Eine Meldung enthält nur Zeitpunkt, Variante, Land, Ereignistyp und bei
-Befehlen eine Vorschau von höchstens 80 Zeichen. Die Vorschau ist schon beim
+Befehlen eine Vorschau von höchstens 80 Zeichen samt ATT&CK-Techniken. Die Vorschau ist schon beim
 Ingest entschärft worden, die Adresse des Angreifers steht darin nie. Keine
 Sitzungs-ID, kein Hash: Aus dem Stream lässt sich niemand wiedererkennen.
 """
@@ -25,6 +25,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
+from app.attack import classify
 from app.defang import shorten
 from app.events import NormalizedEvent
 from app.ratelimit import RateLimiter, client_key
@@ -63,7 +64,11 @@ def stream_message(event: NormalizedEvent, country: str | None) -> dict[str, Any
     if kind == "command":
         # fields["input"] ist schon gekürzt, ohne Adresse des Angreifers und
         # entschärft (app.events). Hier nur noch auf die Vorschaulänge.
-        message["command"] = shorten(event.fields.get("input") or "", PREVIEW_LENGTH)
+        text = event.fields.get("input") or ""
+        message["command"] = shorten(text, PREVIEW_LENGTH)
+        # Auf dem ganzen Befehl, nicht auf der Vorschau. Dasselbe Ergebnis,
+        # das der Ingest in commands.techniques schreibt (E-037).
+        message["techniques"] = classify(text)
     return message
 
 

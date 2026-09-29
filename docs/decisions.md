@@ -1602,3 +1602,75 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
   dem Hauptserver. Maßgeblich für den Betrieb bleibt der Lauf dort.
 - Ändert sich der Köder-Token in der Persona, muss `.gitleaks.toml` mit.
 - Neue Action-Versionen kommen nur durch bewusstes Nachziehen der Hashes.
+
+## E-037: ATT&CK-Regeln als Daten, Zuordnung beim Ingest
+
+- Status: angenommen
+- Datum: 2026-09-29
+- Quelle: Auftrag des Users, Schritt 6.1
+
+**Entscheidung:**
+
+- Die Regeln stehen in `server/rules/attack.yml`: je Technik ID, Name,
+  Taktiken, kurze Begründung und reguläre Ausdrücke. Oben steht die
+  ATT&CK-Version, **Enterprise v19.2** (2026-04-28). IDs, Namen und Taktiken
+  wurden am 2026-09-29 auf attack.mitre.org nachgesehen.
+- Startset: T1082, T1033, T1098.004, T1222.002, T1105. Aus der Bauanleitung
+  dazu T1057, T1053.003 und T1070.003. T1496 (Miner) bleibt draußen.
+- Die Zuordnung läuft **beim Ingest** (`add_command` schreibt
+  `commands.techniques`). Stream und `/stats/recent` geben die Techniken als
+  zusätzliches Feld `techniques` aus, alle anderen Felder bleiben gleich.
+- Der Worker-Job `attack` taggt alle gespeicherten Befehle neu. Er läuft nur
+  von Hand, nicht im Zeitplan. `run attack --bericht` gibt danach die
+  100 häufigsten Befehle ohne Technik im Terminal aus, nicht ins Log.
+- Die Muster laufen auf dem gespeicherten Text, also entschärft (`hxxp://`,
+  `[.]`). `{cmd}` und `{end}` in der Datei grenzen Befehlswörter ab, damit
+  `apt-get install wget` oder `cat ~/.ssh/id_rsa.pub` nichts treffen.
+- ReDoS: Eingabe auf 4096 Zeichen gekürzt, Muster höchstens 512 Zeichen.
+  Der Loader zerlegt jedes Muster mit Pythons Regex-Parser und lehnt
+  verschachtelte Wiederholungen und Rückverweise ab. Die API startet dann
+  nicht. Nach dem Review ist die Prüfung strenger: In einer Wiederholung
+  mit Obergrenze über 1 (`+`, `*`, `{n,m}`) sind nur noch Literale und
+  Zeichenklassen erlaubt, also keine Alternativen, keine optionalen Teile
+  und keine weiteren Wiederholungen, damit auch Muster wie `(a|a)+` und
+  `(a?a)+` abgelehnt werden.
+
+**Begründung:**
+
+- Die Spalte `commands.techniques` gab es seit dem Grundschema, eine
+  Migration war nicht nötig. Beim Ingest kostet die Zuordnung einmal
+  Mikrosekunden. Danach lässt sich in SQL nach Technik filtern, für
+  Kampagnen (6.2) und den Report.
+- Die Bauanleitung sah das Tagging im Worker vor. Dann bekäme der Stream die
+  Techniken aber erst bis zu einer Stunde später. Der Worker bleibt fürs
+  Nachtaggen zuständig. Stündlich alle Befehle zu prüfen lohnt nicht, weil
+  sich das Ergebnis nur mit den Regeln ändert, und die ändern sich nur mit
+  einem neuen Build.
+- In v19 gibt es die Taktik „Defense Evasion“ nicht mehr. Sie ist in
+  **Stealth (TA0005)** und **Defense Impairment (TA0112)** aufgegangen.
+  T1222.002 heißt jetzt „Linux and Mac Permissions“ und gehört zu Defense
+  Impairment, T1070.003 zu Stealth. Der Loader kennt nur die 15 Taktiken
+  von v19.
+- Bewusst eng: T1222.002 nur für `chmod`/`chattr` an `.ssh`, wie im Auftrag.
+  `chmod +x x.sh` bleibt ohne Tag. `curl` zählt als T1105 nur mit
+  Ausgabedatei (`-o`, `-O`, `--output`) oder Pipe in eine Shell, sonst ist es
+  meist eine Abfrage. `crontab -l` und `crontab -r` sind kein T1053.003.
+- T1496 über Miner-Begriffe liefert viele Fehltreffer, etwa bei `pgrep -f
+  xmrig`, das eher Discovery ist. Das lässt sich über Kampagnen in 6.2
+  besser zuordnen.
+- Die Testbefehle in `server/tests/fixtures/attack_commands.yml` sind von
+  Hand geschrieben: Dokumentationsadressen, entschärft, Schlüssel nur als
+  Platzhalter. Rohdaten fließen nicht in die Tests.
+- Der Report enthält Angreifertext. Deshalb geht er nicht ins Log, und
+  Steuerzeichen erscheinen escaped, damit sie das Terminal nicht steuern.
+
+**Konsequenzen:**
+
+- Neue Befehle tragen ihre Techniken sofort. Ältere erst nach
+  `run attack` auf dem Hauptserver.
+- Jede Regeländerung braucht einen Build und danach `run attack`.
+- Bei einem Wechsel der ATT&CK-Version müssen `attack_version`, die
+  Taktikliste in `app/attack.py` und die Namen in der Regeldatei mit.
+- `re._parser` ist eine interne API von Python. Ändert sie sich mit einer
+  neuen Python-Version, schlagen die Tests in `tests/test_attack.py` an.
+- Neue Abhängigkeit im Server-Image: `pyyaml==6.0.3`.

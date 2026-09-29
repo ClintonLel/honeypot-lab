@@ -6,6 +6,8 @@ Aufruf im Container:
     python -m worker.main run ipinfo             # ein Job, einmal, dann Ende
     python -m worker.main run statistik --alle-tage
     python -m worker.main run alle
+    python -m worker.main run attack             # Befehle neu taggen (nur von Hand)
+    python -m worker.main run attack --bericht   # dazu die häufigsten ohne Tag
 
 Jeder Lauf loggt Dauer und Ergebnis. Ein fehlgeschlagener Job beendet den
 Worker nicht, er kommt beim nächsten Takt wieder dran.
@@ -71,7 +73,16 @@ STATISTIK = Job("statistik", timedelta(hours=1), jobs.aggregate_daily_stats, _ri
 AUFRAEUMEN = Job("aufraeumen", timedelta(days=1), jobs.cleanup_raw_events, _right_away)
 
 JOBS = (IPINFO, STATISTIK, AUFRAEUMEN)
-BY_NAME = {job.name: job for job in JOBS}
+
+# Läuft nur auf Zuruf, nicht im Zeitplan und nicht bei "alle": Neue Befehle
+# taggt schon der Ingest, nachgetaggt wird nur nach einer Regeländerung (E-037).
+ATTACK = Job("attack", timedelta(0), jobs.tag_commands, _right_away)
+MANUAL_JOBS = (ATTACK,)
+
+BY_NAME = {job.name: job for job in (*JOBS, *MANUAL_JOBS)}
+
+# Breite einer Zeile im Report. Längere Befehle werden gekürzt.
+REPORT_WIDTH = 200
 
 
 def safe_detail(exc: BaseException) -> str:
@@ -111,6 +122,29 @@ async def run_job(job: Job, ctx: jobs.Context, **kwargs: Any) -> bool:
     return True
 
 
+def printable(command: str, width: int = REPORT_WIDTH) -> str:
+    """Macht Angreifertext fürs Terminal harmlos.
+
+    Steuerzeichen, etwa Escape-Sequenzen, erscheinen als ``\\x1b`` und
+    steuern das Terminal nicht. Der Text ist beim Ingest schon entschärft.
+    """
+    visible = "".join(
+        ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in command
+    )
+    return visible if len(visible) <= width else visible[: width - 1] + "…"
+
+
+def format_report(report: dict[str, Any]) -> str:
+    total, untagged = report["befehle"], report["ohne_technik"]
+    share = f"{untagged / total:.0%}" if total else "–"
+    lines = [
+        f"Befehle gesamt: {total}, ohne ATT&CK-Technik: {untagged} ({share})",
+        f"Die {len(report['haeufigste'])} häufigsten Befehle ohne Technik:",
+    ]
+    lines += [f"{count:>8}  {printable(command)}" for command, count in report["haeufigste"]]
+    return "\n".join(lines)
+
+
 async def run_forever(ctx: jobs.Context, stopping: asyncio.Event) -> None:
     next_run = {job.name: job.first_run(ctx) for job in JOBS}
     logger.info(
@@ -138,7 +172,14 @@ async def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="statistik: jeden Tag neu rechnen, etwa nach nachgelieferten Ländern",
     )
+    once.add_argument(
+        "--bericht",
+        action="store_true",
+        help="attack: danach die häufigsten Befehle ohne Technik ausgeben",
+    )
     args = parser.parse_args(argv)
+    if args.command == "run" and args.bericht and args.job != ATTACK.name:
+        parser.error("--bericht gibt es nur für attack")
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -155,6 +196,9 @@ async def main(argv: list[str] | None = None) -> int:
             for job in selected:
                 kwargs = {"all_days": True} if job is STATISTIK and args.alle_tage else {}
                 results.append(await run_job(job, ctx, **kwargs))
+            if args.bericht and all(results):
+                # Auf stdout, nicht ins Log: Die Befehle sind Angreifertext.
+                print(format_report(await jobs.untagged_report(ctx)))
             return 0 if all(results) else 1
 
         stopping = asyncio.Event()

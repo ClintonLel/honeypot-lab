@@ -294,7 +294,7 @@ async def breakdown(request: Request, response: Response, days: int = Days) -> d
 
 RECENT_SQL = text(
     """
-    SELECT c.occurred_at, se.variant, se.country, c.command
+    SELECT c.occurred_at, se.variant, se.country, c.command, c.techniques
     FROM commands c
     JOIN sessions se ON se.id = c.session_id
     ORDER BY c.occurred_at DESC, c.id DESC
@@ -317,8 +317,9 @@ def recent_messages(rows: list[Any]) -> list[dict[str, Any]]:
             "country": country,
             "event": "command",
             "command": shorten(command, PREVIEW_LENGTH),
+            "techniques": list(techniques or []),
         }
-        for occurred_at, variant, country, command in reversed(rows)
+        for occurred_at, variant, country, command, techniques in reversed(rows)
     ]
 
 

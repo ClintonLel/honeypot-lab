@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.attack import classify
 from app.config import Settings
 from app.enrichment import Enricher, Origin
 from app.events import MAX_BATCH, EventRejected, NormalizedEvent, normalize
@@ -220,6 +221,8 @@ async def add_command(db: AsyncSession, event: NormalizedEvent, session_id: int)
             occurred_at=event.occurred_at,
             command=text,
             command_hash=sha256(text.encode("utf-8")).hexdigest(),
+            # Auf dem gespeicherten, schon entschärften Text (E-037).
+            techniques=classify(text),
         )
         .on_conflict_do_nothing(constraint="uq_commands_session_sequence")
     )
