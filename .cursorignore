@@ -2,8 +2,12 @@
 # Ergänzt .gitignore, ersetzt sie nicht.
 
 # --- Secrets -----------------------------------------------------------------
+# .env ohne Schrägstrich greift in jedem Ordner, auch sensor/.env.
 .env
-server/.env
+.env.*
+!.env.example
+*.pem
+*.key
 
 # --- IPinfo-/GeoIP-Datenbanken -----------------------------------------------
 *.mmdb
@@ -19,12 +23,14 @@ backups/
 
 # --- Honeypot-Rohdaten (Klartext-IPs, Angreifer-Eingaben, Malware) ----------
 cowrie.json*
+*.log
 tty/
 downloads/
 
-# --- OpenTofu-State und -Variablen (Sensor-IP, User Data) --------------------
+# --- OpenTofu-State, -Pläne und -Variablen (Sensor-IP, User Data) -----------
 *.tfstate
 *.tfstate.*
+*.tfplan
 *.tfvars
 *.tfvars.json
 

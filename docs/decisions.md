@@ -49,9 +49,10 @@ bei der Übernahme ausformuliert.
 | E-029 | Live-Stream und Statistik-Endpunkte                         | angenommen                                     |
 | E-030 | Seite /lab: eigenes Projekt in Website-Demo, eigene Globus-Instanz | angenommen                              |
 | E-031 | Startseite als Projektseite mit Live-Karte des Labs         | angenommen                                     |
-| E-032 | Regeln für Coding-Agenten in AGENTS.md                      | angenommen, Sperrlisten ergänzt durch E-033    |
-| E-033 | Rohdaten und weitere .env-Dateien für Agenten sperren       | angenommen, Sperrlisten ergänzt durch E-034    |
-| E-034 | OpenTofu-State und -Variablen für Agenten sperren           | angenommen                                     |
+| E-032 | Regeln für Coding-Agenten in AGENTS.md                      | angenommen, Sperrlisten ergänzt durch E-033 und E-035 |
+| E-033 | Rohdaten und weitere .env-Dateien für Agenten sperren       | angenommen, Sperrlisten ergänzt durch E-034 und E-035 |
+| E-034 | OpenTofu-State und -Variablen für Agenten sperren           | angenommen, `*.tfplan` ersetzt durch E-035     |
+| E-035 | Sperrlisten an .gitignore angleichen, auch `*.tfplan`       | angenommen                                     |
 
 ---
 
@@ -1380,7 +1381,7 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
 
 ## E-032: Regeln für Coding-Agenten in AGENTS.md
 
-- Status: angenommen, Sperrlisten ergänzt durch E-033
+- Status: angenommen, Sperrlisten ergänzt durch E-033 und E-035
 - Datum: 2026-09-29
 - Quelle: Wunsch des Users
 
@@ -1430,7 +1431,7 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
 
 ## E-033: Rohdaten und weitere .env-Dateien für Agenten sperren
 
-- Status: angenommen, Sperrlisten ergänzt durch E-034
+- Status: angenommen, Sperrlisten ergänzt durch E-034 und E-035
 - Datum: 2026-09-29
 - Quelle: Wunsch des Users, offener Punkt aus E-032
 
@@ -1467,7 +1468,7 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
 
 ## E-034: OpenTofu-State und -Variablen für Agenten sperren
 
-- Status: angenommen
+- Status: angenommen, `*.tfplan` ersetzt durch E-035
 - Datum: 2026-09-29
 - Quelle: Wunsch des Users, nach dem Commit der OpenTofu-Dateien (E-013)
 
@@ -1493,3 +1494,69 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
   `tofu output` oder `tofu state list` im Terminal, nicht ein Agent.
 - Nicht gesperrt sind gespeicherte Pläne (`*.tfplan`) und der Ordner
   `.terraform/`. Beide stehen nur in `.gitignore`.
+
+---
+
+## E-035: Sperrlisten an .gitignore angleichen, auch `*.tfplan`
+
+- Status: angenommen
+- Datum: 2026-09-29
+- Quelle: Review von PR #2 durch Antigravity, Auftrag des Users
+
+**Entscheidung:**
+
+- `.cursorignore` und die Deny-Regeln in `.claude/settings.json` sperren
+  zusätzlich `*.pem`, `*.key`, `.env.*` (außer `.env.example`), `*.log` und
+  `*.tfplan`. Die Deny-Regeln sperren außerdem die Datenbank-Dumps
+  (`*.sql`, `*.sql.gz`, `*.dump`, `*.pgdump`, `*.backup`, `dumps/`,
+  `backups/`), die bisher nur `.cursorignore` enthielt.
+- `.env.example` bleibt lesbar: in `.cursorignore` per `!.env.example`, in
+  `.claude/settings.json` per `Read(!**/.env.example)` direkt nach
+  `Read(**/.env.*)`. Die Einzelregeln für `.env.local` und `.env.production`
+  aus E-033 entfallen, `.env.*` erfasst sie.
+- `server/.env` entfällt aus `.cursorignore`. `.env` ohne Schrägstrich greift
+  dort in jedem Ordner, auch in `server/` und `sensor/`.
+- `CLAUDE.md` nennt alle gesperrten Gruppen und beschreibt genauer, wo die
+  Deny-Regeln greifen.
+- Das ersetzt den letzten Punkt von E-034: `*.tfplan` ist jetzt gesperrt.
+  `.terraform/` bleibt frei.
+
+**Begründung:**
+
+- Mit E-032 bis E-034 sperrten `.cursorignore` und die Deny-Regeln
+  unterschiedliche Teilmengen von `.gitignore`. Was Git von GitHub fernhält,
+  soll auch kein Agent einem Modell zeigen. Alle Muster aus `.gitignore` für
+  Secrets, Klartext-IPs und Angreiferdaten stehen jetzt in beiden Listen.
+  Nur in `.cursorignore` stehen `*.mmdb`, `node_modules/` und `dist/`: Sie
+  enthalten nichts davon und sollen nur nicht indexiert werden.
+- Ein gespeicherter Plan enthält den bisherigen State, die Werte der
+  Variablen und die Konfiguration im Klartext, also dieselben Daten wie
+  `*.tfstate` und `*.tfvars` (Sensor-IP, `admin_source_ips`, User Data).
+  `infra/` nutzt keine State- oder Plan-Verschlüsselung von OpenTofu.
+  `.terraform/` enthält bei lokalem Backend nur Provider und Module.
+- `.env.*` statt einzelner Namen: Eine `.env.staging` oder
+  `sensor/.env.local` wäre sonst lesbar.
+- `*.log`: Cowrie und Vector können Logs mit Klartext-IPs schreiben;
+  `.gitignore` führt `*.log` deshalb unter den Rohdaten.
+- Laut Doku von Claude Code gelten Read-Deny-Regeln auch für Grep und Glob
+  sowie für Shell-Befehle, die Dateien beim Namen nennen (`cat`, `head`,
+  `tail`, `sed`, Umleitungen). Sie gelten nicht für `grep -r` ohne
+  Dateinamen und nicht für Programme, die Dateien selbst öffnen. E-032 und
+  E-033 („nur für das Read-Tool“) waren zu eng formuliert.
+- Muster wie `**/cowrie.json*` greifen auch im Repo-Root, Dateinamen ohne
+  Schrägstrich in jeder Tiefe. Mit dem Read-Tool an nicht vorhandenen
+  Pfaden geprüft (die Sperre meldet sich vor „Datei fehlt“): `cowrie.json`,
+  `x.tfplan`, `a.log`, `tty/…` und `dumps/…` im Root, `infra/sensor.key` und
+  `sensor/.env.staging` sind gesperrt, `.env.example` ist lesbar.
+
+**Konsequenzen:**
+
+- Agenten können `.env.example` weiter lesen und ändern, echte `.env`-Dateien
+  in keinem Ordner.
+- `tofu show` auf einen gespeicherten Plan zeigt dessen Inhalt trotzdem. Das
+  gehört ins Terminal, nicht in einen Agenten (E-034).
+- Die SSH-Host-Keys des Sensors heißen `ssh_host_*_key` und liegen unter
+  `/srv/honeypot/hostkeys` auf dem Sensor. `*.key` erfasst sie nicht; sie
+  gehören nicht ins Repo.
+- Weiter offen: Gegen Shell-Zugriffe, die die Deny-Regeln nicht erkennen,
+  hilft nur die Sandbox von Claude Code oder Disziplin (`CLAUDE.md`).
