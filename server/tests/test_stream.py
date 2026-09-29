@@ -2,7 +2,8 @@
 
 Die Zusage aus dem Bauplan: Der Stream zeigt Live-Ereignisse ohne IPs. Die
 Adresse des Angreifers darf nie darin stehen, auch nicht entschärft.
-Adressen Dritter in Befehlen erscheinen nur entschärft (README „Harte Regeln“).
+Adressen Dritter in Befehlen erscheinen nur entschärft
+(AGENTS.md „Harte Regeln“).
 """
 
 from __future__ import annotations

@@ -49,6 +49,7 @@ bei der Übernahme ausformuliert.
 | E-029 | Live-Stream und Statistik-Endpunkte                         | angenommen                                     |
 | E-030 | Seite /lab: eigenes Projekt in Website-Demo, eigene Globus-Instanz | angenommen                              |
 | E-031 | Startseite als Projektseite mit Live-Karte des Labs         | angenommen                                     |
+| E-032 | Regeln für Coding-Agenten in AGENTS.md                      | angenommen                                     |
 
 ---
 
@@ -1372,3 +1373,53 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
   Footer der Startseite.
 - **Neue Projekte:** Ein neues Projekt bekommt eine weitere Karte und einen
   Abschnitt, in beiden Sprachfassungen (`docs/DEPLOYMENT.md` in Website-Demo).
+
+---
+
+## E-032: Regeln für Coding-Agenten in AGENTS.md
+
+- Status: angenommen
+- Datum: 2026-09-29
+- Quelle: Wunsch des Users
+
+**Entscheidung:**
+
+- **Die Vorgaben stehen in `AGENTS.md`.** Ziel, Architektur, harte Regeln,
+  Stack, Arbeitsweise und Befehle sind wörtlich aus README.md übernommen.
+  README.md behält Titel und Ziel und verweist auf `AGENTS.md`.
+- **`CLAUDE.md` bindet `AGENTS.md` per `@AGENTS.md` ein.** Darunter stehen
+  nur Hinweise, die allein für Claude Code gelten.
+- **`.cursorignore`** hält Secrets, `.mmdb`-Dateien, Datenbank-Dumps,
+  `node_modules` und `dist` von Cursor fern.
+- **`.claude/settings.json`** verbietet Claude Code das Lesen von
+  `.env`-Dateien (`Read(.env)`, `Read(**/.env)`).
+- **`docs/workflow-log.md`** hält je Aufgabe fest, welches Werkzeug sie
+  erledigt hat und was von Hand nachgearbeitet wurde.
+
+**Begründung:**
+
+- Neben Claude Code sollen auch andere Coding-Agenten wie Cursor im Repo
+  arbeiten. `AGENTS.md` ist die Datei, die solche Werkzeuge von sich aus
+  lesen. Die Regeln stehen damit an einer Stelle und laufen nicht
+  auseinander.
+- Claude Code liest `CLAUDE.md`, nicht `AGENTS.md`. Der Import bindet die
+  Regeln ein, ohne sie zu kopieren.
+- Die Bauplan-Vorlage hieß `CLAUDE.md`, lag im Repo aber als README.md. Die
+  Regeln richten sich an Agenten, README.md richtet sich an Leser auf GitHub.
+- Was ein Agent liest, kann im Kontext eines Modells und damit beim Anbieter
+  landen. Die Regel „Secrets nur über .env; nie committen, nie loggen“ soll
+  deshalb auch für Agenten gelten.
+
+**Konsequenzen:**
+
+- Neue Regeln für alle Agenten kommen in `AGENTS.md`, nicht in `CLAUDE.md`
+  oder README.md.
+- Verweise auf README-Abschnitte in E-001 bis E-010, E-012, E-023, E-024,
+  E-029 und E-030 meinen jetzt den gleichnamigen Abschnitt in `AGENTS.md`.
+  Die Einträge bleiben unverändert. Verweise in Code, Tests und Doku zeigen
+  jetzt auf `AGENTS.md`.
+- Die Deny-Regeln gelten nur für Claude Codes Read-Tool. Ein `cat .env` über
+  die Shell verhindern sie nicht, darauf weist `CLAUDE.md` hin. Dateien wie
+  `.env.local` erfassen sie nicht.
+- Offen: `.cursorignore` enthält die Rohdaten des Honeypots (`cowrie.json*`,
+  `tty/`, `downloads/`) noch nicht. Sie stehen bisher nur in `.gitignore`.

@@ -1,0 +1,22 @@
+# Dateien, die Cursor weder indexiert noch einem Modell zeigt.
+# Ergänzt .gitignore, ersetzt sie nicht.
+
+# --- Secrets -----------------------------------------------------------------
+.env
+server/.env
+
+# --- IPinfo-/GeoIP-Datenbanken -----------------------------------------------
+*.mmdb
+
+# --- Datenbank-Dumps und Backups ---------------------------------------------
+*.sql
+*.sql.gz
+*.dump
+*.pgdump
+*.backup
+dumps/
+backups/
+
+# --- Abhängigkeiten und Build ------------------------------------------------
+node_modules/
+dist/

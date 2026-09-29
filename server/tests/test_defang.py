@@ -1,4 +1,4 @@
-"""Prüft das Entschärfen von URLs und Adressen (README „Harte Regeln“)."""
+"""Prüft das Entschärfen von URLs und Adressen (AGENTS.md „Harte Regeln“)."""
 
 from __future__ import annotations
 

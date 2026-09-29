@@ -2,8 +2,9 @@
 
 Alles hier ist reine Rechnung ohne Datenbank, damit es sich auch ohne
 PostgreSQL testen lässt. Die Eingaben stammen von einem Honeypot, also aus
-feindlicher Quelle (README „Harte Regeln“): Jede Zeile wird gegen eine Liste
-bekannter ``eventid`` geprüft, jede Länge begrenzt, jeder Freitext entschärft.
+feindlicher Quelle (AGENTS.md „Harte Regeln“): Jede Zeile wird gegen eine
+Liste bekannter ``eventid`` geprüft, jede Länge begrenzt, jeder Freitext
+entschärft.
 
 Die Quell-IP verlässt dieses Modul nur in ``NormalizedEvent.source_address``.
 Der Ingest reichert damit an, bildet den HMAC und wirft den Klartext weg

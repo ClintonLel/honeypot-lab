@@ -29,7 +29,7 @@ Honeytokens aus Schritt 8.1.
 
 ## Namensregel
 
-README.md verbietet reale Firmen-, Personen- und Markennamen in der Persona.
+AGENTS.md verbietet reale Firmen-, Personen- und Markennamen in der Persona.
 Umgesetzt ist die Regel so:
 
 - **Frei erfunden:** Organisation, Rollen, Accounts, Hostnamen, Domain

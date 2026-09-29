@@ -1,8 +1,9 @@
 """Freitexte entschärfen, bevor sie irgendwo angezeigt werden.
 
-Regel aus README.md: „URLs und IPs in allen öffentlichen Ausgaben entschärfen
-(hxxp://, [.])“. Angreifer-Befehle enthalten Adressen von Systemen, die
-niemand aus Versehen anklicken oder ein Scanner automatisch besuchen soll.
+Regel aus AGENTS.md: „URLs und IPs in allen öffentlichen Ausgaben
+entschärfen (hxxp://, [.])“. Angreifer-Befehle enthalten Adressen von
+Systemen, die niemand aus Versehen anklicken oder ein Scanner automatisch
+besuchen soll.
 
 Entschärft wird beim Schreiben, nicht erst beim Anzeigen: In der Datenbank
 steht damit von vornherein die harmlose Fassung, und kein späterer Endpunkt

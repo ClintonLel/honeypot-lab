@@ -6,7 +6,7 @@ Herkunft einer Sitzung wird ausschließlich über ``ip_hash`` (HMAC-SHA256),
 prüft das für jede Spalte, damit es auch in Zukunft so bleibt.
 
 Längen sind überall begrenzt, weil fast jeder Wert hier aus einer feindlichen
-Quelle stammt (README „Harte Regeln“).
+Quelle stammt (AGENTS.md „Harte Regeln“).
 """
 
 from __future__ import annotations

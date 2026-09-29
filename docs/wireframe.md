@@ -10,7 +10,7 @@ unter `lab/`, ausgeliefert von `gate` (E-020, E-030).
 - Honiggelb steht überall für Variante A, Türkis für Variante B.
   Dunkler Hintergrund wie auf der Landingpage (`#0b1020`), Systemschriften.
 - Angreifer-Texte (Befehle) nur als Text-Knoten einsetzen, nie als HTML
-  (README „Harte Regeln“, E-029).
+  (AGENTS.md „Harte Regeln“, E-029).
 - Keine Klartext-IPs. Die API liefert keine, die Seite zeigt keine.
 - Nichts von Dritten laden: keine Schriften, Karten, Texturen oder Skripte von
   fremden Servern. Verbindungen nur zur eigenen Seite und zu

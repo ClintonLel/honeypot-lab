@@ -2,7 +2,7 @@
 
 Alle Werte kommen aus Umgebungsvariablen, nichts steht im Code. Secrets sind
 ``SecretStr``: Sie tauchen damit weder in ``repr`` noch in Logs oder
-Fehlermeldungen auf (E-009, README „Harte Regeln“).
+Fehlermeldungen auf (E-009, AGENTS.md „Harte Regeln“).
 """
 
 from __future__ import annotations
