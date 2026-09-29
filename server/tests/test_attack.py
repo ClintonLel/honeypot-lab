@@ -54,6 +54,12 @@ def test_the_start_set_is_there():
     assert {"T1082", "T1033", "T1098.004", "T1222.002", "T1105"} <= ids
 
 
+def test_the_follow_up_set_is_there():
+    # Folge-PR zu 6.1, E-038.
+    ids = {rule.id for rule in RULES.rules}
+    assert {"T1049", "T1016", "T1098", "T1083"} <= ids
+
+
 def test_every_rule_has_a_hit_and_a_near_miss():
     ids = {rule.id for rule in RULES.rules}
     assert set(CASES["techniques"]) == ids
@@ -119,6 +125,12 @@ HOSTILE = [
     "curl -" + "a" * (MAX_INPUT - 6),
     "> " + "a/" * (MAX_INPUT // 2 - 1),
     "chmod " + "x" * (MAX_INPUT - 6),
+    "/./" * (MAX_INPUT // 3),
+    "/bin/./" * (MAX_INPUT // 7),
+    "| " * (MAX_INPUT // 2),
+    "; ls " * (MAX_INPUT // 5),
+    "ls " + "/ " * (MAX_INPUT // 2 - 2),
+    "ip -a " * (MAX_INPUT // 6),
 ]
 
 
@@ -133,7 +145,8 @@ def test_hostile_input_is_fast(hostile):
 # Alle Regeln gegen Eingaben mit genau MAX_INPUT Zeichen, die {cmd} möglichst
 # oft ansetzen lassen: Leerraum, Anfangszeichen, Vorsätze, Pfade.
 WORST_CASE = [
-    (text * MAX_INPUT)[:MAX_INPUT] for text in (" ", ";", "$(", "sudo ", "/bin/")
+    (text * MAX_INPUT)[:MAX_INPUT]
+    for text in (" ", ";", "$(", "sudo ", "/bin/", "/./", "/usr/./bin/./", "|", "|sudo ", "; ls ")
 ]
 
 

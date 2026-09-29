@@ -53,6 +53,9 @@ bei der Übernahme ausformuliert.
 | E-033 | Rohdaten und weitere .env-Dateien für Agenten sperren       | angenommen, Sperrlisten ergänzt durch E-034 und E-035 |
 | E-034 | OpenTofu-State und -Variablen für Agenten sperren           | angenommen, `*.tfplan` ersetzt durch E-035     |
 | E-035 | Sperrlisten an .gitignore angleichen, auch `*.tfplan`       | angenommen                                     |
+| E-036 | CI mit Tests gegen PostgreSQL und gitleaks, ohne Deploy     | angenommen                                     |
+| E-037 | ATT&CK-Regeln als Daten, Zuordnung beim Ingest              | angenommen, Regeln ergänzt durch E-038         |
+| E-038 | ATT&CK-Regeln erweitert, T1083 enger als bei MITRE          | angenommen                                     |
 
 ---
 
@@ -1674,3 +1677,72 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
 - `re._parser` ist eine interne API von Python. Ändert sie sich mit einer
   neuen Python-Version, schlagen die Tests in `tests/test_attack.py` an.
 - Neue Abhängigkeit im Server-Image: `pyyaml==6.0.3`.
+
+## E-038: ATT&CK-Regeln erweitert, T1083 enger als bei MITRE
+
+- Status: angenommen
+- Datum: 2026-09-29
+- Quelle: Auftrag des Users, Folge-PR zu Schritt 6.1
+
+**Entscheidung:**
+
+- Neue Regeln in `server/rules/attack.yml`: **T1049** (Netzverbindungen
+  auflisten), **T1016** (Adressen, Schnittstellen und Routen abfragen),
+  **T1098** (Passwort ohne Rückfrage setzen, über das Werkzeug für
+  Passwortlisten oder über eine Pipe in das Passwortprogramm) und **T1083**
+  (Dateien suchen, Systemverzeichnisse auflisten). IDs, Namen und Taktiken
+  am 2026-09-29 auf attack.mitre.org gegen v19.2 geprüft: T1049, T1016 und
+  T1083 gehören zu Discovery, T1098 zu Persistence und Privilege Escalation.
+- T1082 umfasst jetzt auch Rechnername, Laufzeit, Speicher- und
+  Plattenbelegung, geladene Kernelmodule, Systemkonstanten und das Lesen der
+  Release-Dateien unter `/etc`. Umgebung und Einhängepunkte zählen nur, wenn
+  der Befehl ohne Argumente läuft. Mit Argumenten führt er etwas aus oder
+  hängt etwas ein, das ist keine Abfrage. T1033 umfasst jetzt auch die
+  Befehle, die angemeldete Benutzer zeigen.
+- `{cmd}` erkennt Pfade mit `/./` zwischen den Teilen. Hinter jedem
+  Schrägstrich des festen Pfads dürfen bis zu drei `./` stehen. Die
+  Wiederholung enthält nur Literale und ist nach oben beschränkt, die
+  Prüfung in `_check_structure` bleibt unverändert.
+- Neuer Platzhalter `{pipe}`: Befehlsanfang direkt hinter einer einfachen
+  Pipe, nicht hinter `||`. Damit zählt das Passwortprogramm nur, wenn es
+  sein Passwort aus einer Pipe liest, und nicht, wenn jemand es interaktiv
+  aufruft.
+- **T1083 bewusst enger als bei MITRE.** MITRE zählt jedes Auflisten und
+  Suchen von Dateien. Hier zählen nur die Dateisuche und das Auflisten der
+  Wurzel und der üblichen Systemverzeichnisse (`/`, `/etc`, `/home`,
+  `/root`, `/var`, `/usr`, `/opt`, `/tmp`), und zwar nur das Verzeichnis
+  selbst, keine Unterverzeichnisse.
+- **Bewusst ohne Tag bleiben:** vorhandene Cron-Einträge nur lesen, die
+  Version des SSH-Clients abfragen, das aktuelle Verzeichnis ausgeben, die
+  Befehlshistorie nur anzeigen, Befehle für andere Plattformen (Windows,
+  Router und andere Netzgeräte) und Aufräumskripte, die konkurrierende
+  Prozesse beenden oder fremde Dateien löschen.
+
+**Begründung:**
+
+- Fast jede interaktive Sitzung listet irgendwann ein Verzeichnis auf. Trüge
+  jede davon T1083, sagte das Tag nichts mehr über die Sitzung aus und
+  verdrängte in Auswertungen die seltenen Techniken. Das gezielte Umsehen
+  in Systemverzeichnissen und die Dateisuche dagegen sind echte Aufklärung.
+- Nur lesen ist bei Cron und Historie keine Technik: E-037 zählt erst das
+  Anlegen eines Cron-Eintrags und das Löschen der Historie. Die
+  Versionsabfrage des SSH-Clients und das aktuelle Verzeichnis sagen über
+  das Ziel des Angreifers zu wenig aus.
+- Befehle für andere Plattformen laufen auf dem Linux-Honeypot ins Leere.
+  Sie zeigen, dass ein Skript blind läuft, aber keine Technik auf diesem
+  System.
+- Aufräumskripte mischen mehrere Techniken und lassen sich einzeln schlecht
+  sauber zuordnen. Über Kampagnen in 6.2 geht das besser.
+- Eine Wiederholung aus Literalen verbraucht je Durchlauf eine feste Zahl
+  Zeichen. Die Obergrenze hält auch die Zahl der Versuche je Stelle klein.
+  Die Tests prüfen feindliche Eingaben mit vielen `/./`, Pipes und
+  Auflistungen gegen dieselbe Zeitgrenze wie bisher.
+
+**Konsequenzen:**
+
+- Nach dem Deploy auf dem Hauptserver `run attack` ausführen, damit ältere
+  Befehle die neuen Tags bekommen (Anleitung in `server/README.md`).
+- Je neue Regel gibt es in `server/tests/fixtures/attack_commands.yml`
+  Treffer und Beinahe-Treffer, von Hand geschrieben.
+- Ob T1083 zu eng ist, zeigt der Bericht von `run attack --bericht` über
+  Befehle ohne Technik. Eine Lockerung braucht einen neuen Eintrag.

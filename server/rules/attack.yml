@@ -9,11 +9,13 @@
 # Adresse des Angreifers und entschärft: "hxxp://", "198[.]51[.]100[.]7".
 # Groß- und Kleinschreibung zählt, wie in der Shell.
 #
-# Zwei Platzhalter setzt der Loader ein:
+# Drei Platzhalter setzt der Loader ein:
 #   {cmd}  Befehlsanfang: Zeilenanfang oder nach ; & | ( { ` $( und Leerraum,
 #          optional bis zu zwei Vorsätze (sudo, busybox, nohup, exec, command,
 #          then, do, else), etwa "then sudo", und ein fester Pfad (/bin/,
 #          /usr/bin/, /usr/local/sbin/ …), auch vor dem Vorsatz: "/bin/sudo".
+#          Im Pfad darf hinter jedem / bis zu dreimal ./ stehen: /bin/./uname.
+#   {pipe} wie {cmd}, aber nur direkt nach einer Pipe |, nicht nach ||.
 #   {end}  Das Befehlswort endet hier: Leerraum, ; & | ) } ` < > oder Ende.
 #
 # Gegen ReDoS (der Loader prüft das und lehnt sonst die ganze Datei ab):
@@ -33,18 +35,50 @@ rules:
   - id: T1082
     name: System Information Discovery
     tactics: [Discovery]
-    reason: Kernel, CPU, Speicher und Distribution abfragen, meist um die passende Nutzlast zu wählen.
+    reason: Kernel, CPU, Speicher, Laufzeit und Distribution abfragen, meist um die passende Nutzlast zu wählen. env und mount zählen nur ohne Argumente, sonst führen sie etwas aus oder hängen etwas ein.
     patterns:
-      - '{cmd}(?:uname|lscpu|hostnamectl|nproc){end}'
+      - '{cmd}(?:uname|lscpu|hostnamectl|hostname|nproc|uptime|free|df|lsmod|getconf){end}'
+      - '{cmd}(?:env|mount)(?=[ \t]{0,16}(?:$|[;&|)}`\n]))'
       - '/proc/(?:cpuinfo|meminfo|version)\b'
-      - '/etc/(?:os-release|lsb-release|issue)\b'
+      - '/etc/(?:[\w*.-]{0,64}release|issue|debian_version)\b'
 
   - id: T1033
     name: System Owner/User Discovery
     tactics: [Discovery]
-    reason: Prüfen, als welcher Benutzer die Shell läuft, etwa ob Root-Rechte da sind.
+    reason: Prüfen, als welcher Benutzer die Shell läuft, etwa ob Root-Rechte da sind, und wer sonst angemeldet ist.
     patterns:
-      - '{cmd}(?:whoami|id|who){end}'
+      - '{cmd}(?:whoami|id|who|w){end}'
+
+  - id: T1049
+    name: System Network Connections Discovery
+    tactics: [Discovery]
+    reason: Offene Verbindungen und lauschende Ports ansehen, etwa um Überwachung oder andere Angreifer zu erkennen.
+    patterns:
+      - '{cmd}(?:netstat|ss){end}'
+
+  - id: T1016
+    name: System Network Configuration Discovery
+    tactics: [Discovery]
+    reason: Adressen, Schnittstellen und Routen abfragen, um das Netz um den Rechner einzuschätzen.
+    patterns:
+      - '{cmd}ifconfig{end}'
+      - '{cmd}ip(?:\s+-\w{1,8})?(?:\s+-\w{1,8})?\s+(?:a|ad|addr|address|r|ro|route){end}'
+
+  - id: T1098
+    name: Account Manipulation
+    tactics: [Persistence, Privilege Escalation]
+    reason: Ein Passwort ohne Rückfrage setzen, per chpasswd oder über eine Pipe in passwd, um das Konto zu übernehmen oder den Besitzer auszusperren.
+    patterns:
+      - '{cmd}chpasswd{end}'
+      - '{pipe}passwd{end}'
+
+  - id: T1083
+    name: File and Directory Discovery
+    tactics: [Discovery]
+    reason: Dateien suchen oder Systemverzeichnisse auflisten. Bewusst enger als bei MITRE (E-038), ls zählt nur auf / und die üblichen Systemverzeichnisse, nicht jedes ls.
+    patterns:
+      - '{cmd}(?:find|locate){end}'
+      - '{cmd}ls(?=\s)[^;&|\n]{0,256}\s/(?:etc|home|root|var|usr|opt|tmp)?/?{end}'
 
   - id: T1098.004
     name: 'Account Manipulation: SSH Authorized Keys'
