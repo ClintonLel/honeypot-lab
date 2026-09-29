@@ -1,0 +1,39 @@
+Module                  Size  Used by
+binfmt_misc            28672  1
+nls_ascii              12288  1
+nls_cp437              16384  1
+vfat                   24576  1
+fat                   102400  1 vfat
+evdev                  32768  2
+joydev                 28672  0
+serio_raw              20480  0
+virtio_balloon         28672  0
+virtio_console         45056  1
+qemu_fw_cfg            20480  0
+button                 24576  0
+efi_pstore             12288  0
+configfs               57344  1
+nfnetlink              20480  1
+ip_tables              32768  0
+x_tables               57344  1 ip_tables
+autofs4                57344  2
+ext4                 1056768  1
+crc16                  12288  1 ext4
+mbcache                16384  1 ext4
+jbd2                  196608  1 ext4
+crc32c_generic         12288  2
+virtio_net             77824  0
+net_failover           20480  1 virtio_net
+failover               12288  1 net_failover
+virtio_blk             32768  2
+virtio_pci             24576  0
+virtio_pci_legacy_dev    12288  1 virtio_pci
+virtio_pci_modern_dev    20480  1 virtio_pci
+floppy                131072  0
+i2c_piix4              32768  0
+i2c_smbus              20480  1 i2c_piix4
+ata_generic            12288  0
+ata_piix               45056  0
+libata                471040  2 ata_generic,ata_piix
+scsi_mod              286720  1 libata
+scsi_common            16384  2 libata,scsi_mod

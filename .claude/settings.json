@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(.env)",
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.production)",
+      "Read(**/cowrie.json*)",
+      "Read(**/tty/**)",
+      "Read(**/downloads/**)",
+      "Read(**/*.tfstate)",
+      "Read(**/*.tfstate.*)",
+      "Read(**/*.tfvars)",
+      "Read(**/*.tfvars.json)"
+    ]
+  }
+}

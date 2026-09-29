@@ -1,0 +1,9 @@
+#!/opt/ci-agent/venv/bin/python3
+# ci-agent launcher, installed by config management
+
+import sys
+
+from ci_agent.main import run
+
+if __name__ == "__main__":
+    sys.exit(run())

@@ -1,0 +1,33 @@
+# Dateien, die Cursor weder indexiert noch einem Modell zeigt.
+# Ergänzt .gitignore, ersetzt sie nicht.
+
+# --- Secrets -----------------------------------------------------------------
+.env
+server/.env
+
+# --- IPinfo-/GeoIP-Datenbanken -----------------------------------------------
+*.mmdb
+
+# --- Datenbank-Dumps und Backups ---------------------------------------------
+*.sql
+*.sql.gz
+*.dump
+*.pgdump
+*.backup
+dumps/
+backups/
+
+# --- Honeypot-Rohdaten (Klartext-IPs, Angreifer-Eingaben, Malware) ----------
+cowrie.json*
+tty/
+downloads/
+
+# --- OpenTofu-State und -Variablen (Sensor-IP, User Data) --------------------
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+
+# --- Abhängigkeiten und Build ------------------------------------------------
+node_modules/
+dist/

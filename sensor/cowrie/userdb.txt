@@ -1,0 +1,12 @@
+# Honeypot-Lab: angenommene Logins, gleich fuer cowrie-a und cowrie-b (E-017)
+#
+# Nur die Konten der Persona mit Login-Shell, die Bots typischerweise probieren.
+# Format: benutzer:x:passwort. "!" verbietet ein Passwort, "*" erlaubt jedes.
+# Die erste passende Zeile gilt.
+# Cowrie liest diese Datei als ASCII: keine Umlaute.
+root:x:!root
+root:x:!123456
+root:x:*
+admin:x:!admin
+admin:x:!123456
+admin:x:*

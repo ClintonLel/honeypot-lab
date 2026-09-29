@@ -1,0 +1,195 @@
+"""Prüft die Vector-Konfiguration gegen die Grenzen der API und die Regeln.
+
+Vector läuft auf dem Sensor, also auf der Maschine, die als kompromittierbar
+gilt. Zwei Zusagen müssen deshalb hier stehen und nicht nur in der Doku: Das
+Token steht nicht in der Datei, und die Stapel passen zu dem, was die API und
+Caddy annehmen (E-021, E-024).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+SENSOR = Path(__file__).resolve().parents[1]
+CONFIG = SENSOR / "vector" / "vector.yaml"
+COMPOSE = SENSOR / "docker-compose.yml"
+
+# Grenzen der Gegenseite, siehe server/app/events.py und E-021.
+API_MAX_EVENTS = 500
+CADDY_MAX_BODY = 1024 * 1024
+
+# Kleinster Plattenpuffer, den Vector annimmt: 256 MiB plus Verwaltung.
+# Darunter startet der Dienst mit Exit-Code 78 nicht.
+MIN_DISK_BUFFER = 268435488
+
+
+def read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def config() -> dict:
+    yaml = pytest.importorskip("yaml", reason="PyYAML fehlt")
+    return yaml.safe_load(read(CONFIG))
+
+
+@pytest.fixture(scope="module")
+def compose() -> dict:
+    yaml = pytest.importorskip("yaml", reason="PyYAML fehlt")
+    return yaml.safe_load(read(COMPOSE))
+
+
+# --- Secrets ----------------------------------------------------------------
+
+
+def test_the_token_is_only_a_reference():
+    """Ohne YAML lesbar, damit dieser Test überall läuft."""
+    text = read(CONFIG)
+    assert "SECRET[lab.ingest_token]" in text
+    # Ein echtes Token wäre 64 Hex-Zeichen lang.
+    assert not any(len(word) >= 64 and all(c in "0123456789abcdef" for c in word) for word in text.split())
+
+
+def test_the_token_comes_from_a_file_on_the_host():
+    """Seit Vector 0.57 gibt es keine ${VAR}-Ersetzung mehr (E-026)."""
+    assert "/srv/honeypot/secrets:/run/secrets/lab:ro" in read(COMPOSE)
+
+
+def test_the_token_is_not_in_the_environment_of_the_container(compose):
+    """Was in der Umgebung steht, zeigt jedes docker inspect."""
+    service = compose["services"]["vector"]
+    assert "env_file" not in service
+    assert "INGEST_TOKEN" not in " ".join(f"{k}={v}" for k, v in service["environment"].items())
+
+
+# --- Grenzen passen zur Gegenseite ------------------------------------------
+
+
+def test_a_batch_fits_through_the_api(config):
+    batch = config["sinks"]["lab_api"]["batch"]
+    assert batch["max_events"] <= API_MAX_EVENTS
+    assert batch["max_bytes"] <= CADDY_MAX_BODY
+
+
+def test_the_sink_points_at_the_lab_api(config):
+    sink = config["sinks"]["lab_api"]
+    assert sink["uri"] == "https://api.tomkaufmann.dev/ingest"
+    assert sink["method"] == "post"
+    assert sink["auth"] == {"strategy": "bearer", "token": "SECRET[lab.ingest_token]"}
+
+
+def test_a_batch_is_a_plain_json_array(config):
+    """Vector baut das Array selbst.
+
+    Eine zusätzliche Hülle aus payload_prefix und payload_suffix ergab
+    [[e1, e2]], und die API sah ein einziges Element, das kein Objekt war
+    (E-027).
+    """
+    sink = config["sinks"]["lab_api"]
+    assert sink["encoding"]["codec"] == "json"
+    assert sink["framing"]["method"] == "character_delimited"
+    assert sink["framing"]["character_delimited"]["delimiter"] == ","
+    assert "payload_prefix" not in sink
+    assert "payload_suffix" not in sink
+
+
+def test_the_secret_backend_reads_the_mounted_directory(config, compose):
+    backend = config["secret"]["lab"]
+    assert backend["type"] == "directory"
+    mounts = compose["services"]["vector"]["volumes"]
+    assert any(mount.endswith(f"{backend['path']}:ro") for mount in mounts)
+
+
+# --- Keine Lücken, keine Duplikate ------------------------------------------
+
+
+def test_the_position_survives_a_restart(config):
+    """Ohne data_dir liest Vector nach einem Neustart alles noch einmal."""
+    assert config["data_dir"] == "/var/lib/vector"
+
+
+def test_the_file_is_recognized_by_its_content(config):
+    """Cowrie rotiert die Datei. Am Namen erkannt, gäbe es Lücken."""
+    fingerprint = config["sources"]["cowrie"]["fingerprint"]
+    assert fingerprint["strategy"] == "checksum"
+
+
+def test_everything_that_is_already_there_is_read(config):
+    assert config["sources"]["cowrie"]["read_from"] == "beginning"
+
+
+def test_rotated_files_are_watched_too(config):
+    """Cowrie rotiert um Mitternacht UTC. Was danach noch in die alte Datei
+    läuft, ginge sonst verloren."""
+    assert all(path.endswith("cowrie.json*") for path in config["sources"]["cowrie"]["include"])
+
+
+def test_the_rotation_test_watches_the_same_files(config):
+    """Der Test prüft nur etwas, wenn er dieselben Dateien beobachtet."""
+    script = read(SENSOR / "scripts" / "test-vector-rotation.sh")
+    assert "- /logs/cowrie.json*" in script
+
+
+def test_an_outage_is_buffered_on_disk(config):
+    buffer = config["sinks"]["lab_api"]["buffer"]
+    assert buffer["type"] == "disk"
+    assert buffer["when_full"] == "block"
+    assert buffer["max_size"] >= MIN_DISK_BUFFER
+
+
+def test_failed_requests_are_retried(config):
+    request = config["sinks"]["lab_api"]["request"]
+    assert request["retry_attempts"] >= 5
+
+
+# --- Variante und Mounts ----------------------------------------------------
+
+
+def test_the_variant_comes_from_the_path(config):
+    source = config["transforms"]["aufbereiten"]["source"]
+    assert "/srv/honeypot/a/" in source
+    assert '.cowrie.variant = "a"' in source
+    assert '.cowrie.variant = "b"' in source
+
+
+def test_every_watched_path_is_mounted(config, compose):
+    mounts = compose["services"]["vector"]["volumes"]
+    for path in config["sources"]["cowrie"]["include"]:
+        directory = str(Path(path).parent)
+        assert any(mount.startswith(f"{directory}:") for mount in mounts), f"{directory} fehlt als Mount"
+
+
+def test_the_logs_are_mounted_read_only(compose):
+    mounts = compose["services"]["vector"]["volumes"]
+    logs = [m for m in mounts if "/var/log/cowrie" in m]
+    assert logs and all(m.endswith(":ro") for m in logs)
+
+
+def test_vector_sees_neither_host_keys_nor_the_file_system(compose):
+    mounts = " ".join(compose["services"]["vector"]["volumes"])
+    assert "hostkeys" not in mounts
+    assert "fs.pickle" not in mounts
+
+
+# --- Härtung ----------------------------------------------------------------
+
+
+def test_the_image_is_pinned(compose):
+    assert "@sha256:" in compose["services"]["vector"]["image"]
+    assert ":latest" not in compose["services"]["vector"]["image"]
+
+
+def test_vector_runs_without_root_and_without_capabilities(compose):
+    service = compose["services"]["vector"]
+    assert service["user"] == "999:999"
+    assert service["read_only"] is True
+    assert service["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in service["security_opt"]
+
+
+def test_vector_publishes_no_port(compose):
+    service = compose["services"]["vector"]
+    assert "ports" not in service
+    assert service.get("network_mode") != "host"

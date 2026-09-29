@@ -1,0 +1,18 @@
+[Unit]
+Description=CI build agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=builder
+Group=builder
+ExecStart=/opt/ci-agent/bin/ci-agent --config /opt/ci-agent/etc/agent.ini
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=full
+ReadWritePaths=/srv/build /var/log/ci-agent
+
+[Install]
+WantedBy=multi-user.target

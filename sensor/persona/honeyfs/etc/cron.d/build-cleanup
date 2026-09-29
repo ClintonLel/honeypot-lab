@@ -1,0 +1,5 @@
+# remove build workspaces older than 7 days
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+30 2 * * * builder find /srv/build/workspace -mindepth 1 -maxdepth 1 -type d -mtime +7 -print0 | xargs -0 -r rm -rf --

@@ -1,0 +1,17 @@
+#!/usr/sbin/nft -f
+# Honeypot-Lab: Port 22 auf Cowrie umleiten (Schritt 2.3, E-019)
+#
+# Eigene Tabelle, ersetzt sich beim Laden selbst. Kein "flush ruleset", sonst
+# wuerden beim Laden auch die Regeln von Docker geloescht.
+# Nur IPv4 (Bauplan, Schritt 1.4). Schritt 7.4 ersetzt die Umleitung durch die
+# Zuteilung per jhash der Quell-IP auf cowrie-a und cowrie-b (E-004).
+# Auf dem Sensor: /etc/nftables.d/honeypot.nft, geladen von honeypot-nftables.service
+table ip honeypot
+delete table ip honeypot
+
+table ip honeypot {
+  chain prerouting {
+    type nat hook prerouting priority -110; policy accept;
+    tcp dport 22 redirect to :2222
+  }
+}

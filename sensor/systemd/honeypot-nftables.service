@@ -1,0 +1,15 @@
+[Unit]
+Description=Honeypot-Lab: Port 22 per nftables auf Cowrie umleiten
+Documentation=file:///opt/honeypot-lab/sensor/README.md
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/honeypot.nft
+ExecReload=/usr/sbin/nft -f /etc/nftables.d/honeypot.nft
+# Stoppen entfernt nur die eigene Tabelle, Dockers Regeln bleiben unberührt
+ExecStop=/usr/sbin/nft delete table ip honeypot
+
+[Install]
+WantedBy=multi-user.target

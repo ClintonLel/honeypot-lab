@@ -1,0 +1,2 @@
+# admin may run all commands without a password (login is key-only)
+admin ALL=(ALL:ALL) NOPASSWD: ALL

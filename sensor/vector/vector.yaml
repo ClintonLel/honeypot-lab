@@ -1,0 +1,117 @@
+# Vector auf dem Sensor: liest cowrie.json und liefert die Ereignisse an die
+# Lab-API (E-005, Schritt 4.2).
+#
+# Der Sensor gilt als kompromittierbar. Deshalb kennt Vector nur ein einziges
+# Geheimnis, das Ingest-Token aus /srv/honeypot/.env, und die Verbindung geht
+# ausschließlich vom Sensor zum Hauptserver, nie umgekehrt (E-007).
+
+data_dir: /var/lib/vector
+
+# Seit Vector 0.57 ersetzt Vector ${VAR} in der Konfiguration nicht mehr
+# selbst. Das Token kommt deshalb aus einer Datei: ein Verzeichnis, eine Datei
+# je Geheimnis, Dateiname gleich Name des Geheimnisses. Damit steht es auch
+# nicht mehr in der Umgebung des Containers.
+secret:
+  lab:
+    type: directory
+    path: /run/secrets/lab
+    remove_trailing_whitespace: true
+
+sources:
+  cowrie:
+    type: file
+    include:
+      # Die aktuelle Datei und die rotierten (cowrie.json.JJJJ-MM-TT). Ohne
+      # die rotierten ginge verloren, was nach Mitternacht noch in die alte
+      # Datei läuft, und ältere Tage würden nie gelesen. Doppelt liest Vector
+      # nichts: Er erkennt eine umbenannte Datei am Inhalt (E-027).
+      # Nur Variante A. Variante B bekommt in Phase 7 denselben Eintrag und
+      # ihren eigenen Mount in docker-compose.yml.
+      - /srv/honeypot/a/var/log/cowrie/cowrie.json*
+    # Beim ersten Start alles mitnehmen, was schon dasteht. Danach merkt sich
+    # Vector die Position im data_dir.
+    read_from: beginning
+    # Cowrie rotiert cowrie.json täglich in cowrie.json.JJJJ-MM-TT. Vector
+    # erkennt die Datei an ihrem Inhalt, nicht am Namen, und liest die
+    # rotierte Datei zu Ende, bevor es die neue anfängt.
+    fingerprint:
+      strategy: checksum
+      # Die erste Zeile eines Cowrie-Logs ist eindeutig genug.
+      lines: 1
+    # Rotierte Dateien löscht der Cleanup nach 14 Tagen (Schritt 2.2).
+    ignore_older_secs: 1209600
+    oldest_first: true
+    max_line_bytes: 262144
+
+transforms:
+  aufbereiten:
+    type: remap
+    inputs:
+      - cowrie
+    # Keine Zeile darf den Strom anhalten: Was sich nicht als JSON lesen lässt,
+    # wird verworfen und gezählt.
+    drop_on_error: true
+    drop_on_abort: true
+    source: |
+      geparst, fehler = parse_json(.message)
+      if fehler != null {
+        abort
+      }
+      .cowrie = object!(geparst)
+
+      # Variante aus dem Pfad ableiten: /srv/honeypot/a/... ist A, /b/... ist B.
+      pfad = string!(.file)
+      if starts_with(pfad, "/srv/honeypot/a/") {
+        .cowrie.variant = "a"
+      } else if starts_with(pfad, "/srv/honeypot/b/") {
+        .cowrie.variant = "b"
+      } else {
+        abort
+      }
+
+      . = .cowrie
+
+sinks:
+  lab_api:
+    type: http
+    inputs:
+      - aufbereiten
+    uri: https://api.tomkaufmann.dev/ingest
+    method: post
+    # Das Token kommt aus /srv/honeypot/secrets/ingest_token, nie aus dieser
+    # Datei. Fehlt die Datei, startet Vector nicht.
+    auth:
+      strategy: bearer
+      token: "SECRET[lab.ingest_token]"
+    encoding:
+      codec: json
+    # Mit JSON und Komma als Trenner baut Vector den Stapel selbst als Array
+    # [e1,e2,...]. payload_prefix und payload_suffix wären eine zweite Hülle
+    # darum. Mit "[" und "]" kam deshalb [[e1,e2,...]] an, und die API sah
+    # je Anfrage ein einziges Element, das kein Objekt war (E-027).
+    framing:
+      method: character_delimited
+      character_delimited:
+        delimiter: ","
+    # Die API nimmt höchstens 500 Ereignisse, Caddy begrenzt den Body auf
+    # 1 MB (E-021, E-024). Beides mit Abstand unterschritten.
+    batch:
+      max_events: 250
+      max_bytes: 524288
+      timeout_secs: 5
+    request:
+      retry_attempts: 10
+      retry_initial_backoff_secs: 2
+      retry_max_duration_secs: 300
+      timeout_secs: 30
+      concurrency: 1
+    # Bei einem Ausfall des Hauptservers sammelt Vector auf der Platte, statt
+    # Ereignisse zu verlieren. Vector verlangt mindestens 268435488 Bytes,
+    # also 256 MiB plus etwas Verwaltung; hier sind es 512 MiB.
+    buffer:
+      type: disk
+      max_size: 536870912
+      when_full: block
+    # Der Healthcheck würde /ingest ohne POST aufrufen und scheitern.
+    healthcheck:
+      enabled: false

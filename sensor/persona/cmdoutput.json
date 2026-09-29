@@ -1,0 +1,162 @@
+{
+  "command": {
+    "ps": [
+      {
+        "COMMAND": "/sbin/init",
+        "CPU": 0.0,
+        "MEM": 0.3,
+        "PID": 1,
+        "RSS": 14320,
+        "START": "Sep01",
+        "STAT": "Ss",
+        "TIME": "0:41",
+        "TTY": "?",
+        "USER": "root",
+        "VSZ": 24208
+      },
+      {
+        "COMMAND": "/usr/lib/systemd/systemd-journald",
+        "CPU": 0.0,
+        "MEM": 0.4,
+        "PID": 312,
+        "RSS": 17164,
+        "START": "Sep01",
+        "STAT": "Ss",
+        "TIME": "0:12",
+        "TTY": "?",
+        "USER": "root",
+        "VSZ": 49452
+      },
+      {
+        "COMMAND": "/usr/lib/systemd/systemd-udevd",
+        "CPU": 0.0,
+        "MEM": 0.1,
+        "PID": 347,
+        "RSS": 6912,
+        "START": "Sep01",
+        "STAT": "Ss",
+        "TIME": "0:02",
+        "TTY": "?",
+        "USER": "root",
+        "VSZ": 27744
+      },
+      {
+        "COMMAND": "/usr/lib/systemd/systemd-timesyncd",
+        "CPU": 0.0,
+        "MEM": 0.1,
+        "PID": 512,
+        "RSS": 6400,
+        "START": "Sep01",
+        "STAT": "Ssl",
+        "TIME": "0:03",
+        "TTY": "?",
+        "USER": "systemd+",
+        "VSZ": 91016
+      },
+      {
+        "COMMAND": "/usr/bin/dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only",
+        "CPU": 0.0,
+        "MEM": 0.1,
+        "PID": 531,
+        "RSS": 4480,
+        "START": "Sep01",
+        "STAT": "Ss",
+        "TIME": "0:01",
+        "TTY": "?",
+        "USER": "message+",
+        "VSZ": 8940
+      },
+      {
+        "COMMAND": "/usr/lib/systemd/systemd-logind",
+        "CPU": 0.0,
+        "MEM": 0.1,
+        "PID": 535,
+        "RSS": 7936,
+        "START": "Sep01",
+        "STAT": "Ss",
+        "TIME": "0:02",
+        "TTY": "?",
+        "USER": "root",
+        "VSZ": 17992
+      },
+      {
+        "COMMAND": "/usr/sbin/cron -f",
+        "CPU": 0.0,
+        "MEM": 0.0,
+        "PID": 560,
+        "RSS": 2624,
+        "START": "Sep01",
+        "STAT": "Ss",
+        "TIME": "0:00",
+        "TTY": "?",
+        "USER": "root",
+        "VSZ": 6612
+      },
+      {
+        "COMMAND": "/usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal",
+        "CPU": 0.0,
+        "MEM": 0.5,
+        "PID": 571,
+        "RSS": 21440,
+        "START": "Sep01",
+        "STAT": "Ssl",
+        "TIME": "0:00",
+        "TTY": "?",
+        "USER": "root",
+        "VSZ": 110080
+      },
+      {
+        "COMMAND": "/opt/ci-agent/venv/bin/python3 /opt/ci-agent/bin/ci-agent --config /opt/ci-agent/etc/agent.ini",
+        "CPU": 0.3,
+        "MEM": 2.1,
+        "PID": 583,
+        "RSS": 86112,
+        "START": "Sep01",
+        "STAT": "Ssl",
+        "TIME": "71:18",
+        "TTY": "?",
+        "USER": "builder",
+        "VSZ": 312448
+      },
+      {
+        "COMMAND": "sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups",
+        "CPU": 0.0,
+        "MEM": 0.2,
+        "PID": 590,
+        "RSS": 8320,
+        "START": "Sep01",
+        "STAT": "Ss",
+        "TIME": "0:04",
+        "TTY": "?",
+        "USER": "root",
+        "VSZ": 11928
+      },
+      {
+        "COMMAND": "/sbin/agetty -o -- \\u --noreset --noclear - linux",
+        "CPU": 0.0,
+        "MEM": 0.0,
+        "PID": 602,
+        "RSS": 1920,
+        "START": "Sep01",
+        "STAT": "Ss+",
+        "TIME": "0:00",
+        "TTY": "tty1",
+        "USER": "root",
+        "VSZ": 5892
+      },
+      {
+        "COMMAND": "/sbin/agetty -o -- \\u --keep-baud 115200,57600,38400,9600 - vt220",
+        "CPU": 0.0,
+        "MEM": 0.0,
+        "PID": 604,
+        "RSS": 2048,
+        "START": "Sep01",
+        "STAT": "Ss+",
+        "TIME": "0:00",
+        "TTY": "ttyS0",
+        "USER": "root",
+        "VSZ": 5936
+      }
+    ]
+  }
+}

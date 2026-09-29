@@ -1,0 +1,7 @@
+# Nur für Tests. Steckt im Build-Ziel "test", nicht im Laufzeit-Image.
+
+-r requirements.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0
+# starlette nutzt fuer den TestClient inzwischen httpx2
+httpx2==2.13.0

@@ -1,0 +1,11 @@
+
+bld-ci-03 - CI build worker (pool linux-amd64)
+Managed host: local changes outside config management are overwritten.
+Questions: build infrastructure team, channel #build-infra
+
+The programs included with the Debian GNU/Linux system are free software;
+the exact distribution terms for each program are described in the
+individual files in /usr/share/doc/*/copyright.
+
+Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent
+permitted by applicable law.

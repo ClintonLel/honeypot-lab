@@ -1,0 +1,176 @@
+# Lab-Dienste auf dem Hauptserver (E-020, Schritt 3.3).
+#
+# Kein Dienst veröffentlicht einen Port auf dem Host: Docker umgeht ufw, und
+# von außen soll ausschließlich die API über Caddy erreichbar sein (E-021).
+# Die Webseite in /opt/globe-demo bleibt davon unberührt.
+#
+# Werte kommen aus der .env neben dieser Datei (Rechte 600, Eigentümer root).
+
+name: honeypot-lab
+
+x-lab-service: &lab-service
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  # Bei Speichermangel beendet der Kernel zuerst einen Lab-Container,
+  # nie die Webseite.
+  oom_score_adj: 300
+
+services:
+  db:
+    <<: *lab-service
+    image: postgres:18@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+    environment:
+      POSTGRES_DB: honeypot
+      POSTGRES_USER: honeypot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD fehlt in der .env}
+    # Abgestimmt auf mem_limit 768 MiB (siehe docs/server-inventory.md).
+    command:
+      - postgres
+      - -c
+      - shared_buffers=192MB
+      - -c
+      - effective_cache_size=512MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=40
+    volumes:
+      # postgres:18 legt die Daten unter /var/lib/postgresql/18/docker ab und
+      # deklariert /var/lib/postgresql als Volume. Deshalb hier der Elternpfad.
+      - pgdata:/var/lib/postgresql
+    networks:
+      - lab_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U honeypot -d honeypot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 768m
+    cpus: 1.0
+    cpu_shares: 512
+    pids_limit: 200
+    cap_drop:
+      - ALL
+    # Der Einstiegspunkt von Postgres richtet das Datenverzeichnis ein und
+    # wechselt auf den Benutzer postgres. Mehr Rechte braucht er nicht.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+
+  api:
+    <<: *lab-service
+    build:
+      context: ./server
+      target: runtime
+    image: honeypot-lab-api:local
+    environment:
+      ENVIRONMENT: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      POSTGRES_HOST: db
+      POSTGRES_DB: honeypot
+      POSTGRES_USER: honeypot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD fehlt in der .env}
+      IP_HMAC_KEY: ${IP_HMAC_KEY:?IP_HMAC_KEY fehlt in der .env}
+      INGEST_TOKEN: ${INGEST_TOKEN:?INGEST_TOKEN fehlt in der .env}
+      IPINFO_DB_PATH: /data/ipinfo.mmdb
+      # Erst ab Phase 7 nötig.
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_GATEWAY_TOKEN: ${LLM_GATEWAY_TOKEN:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      lab_internal: {}
+      lab_edge:
+        # Unter diesem Namen findet Caddy die API (E-021).
+        aliases:
+          - lab-api
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      # Die IPinfo-Datenbank schreibt nur der Worker, die API liest sie.
+      - ipinfo:/data:ro
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=3) as r:
+              sys.exit(0 if r.status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    mem_limit: 384m
+    cpus: 1.0
+    cpu_shares: 512
+    pids_limit: 200
+
+  worker:
+    <<: *lab-service
+    build:
+      context: ./server
+      target: runtime
+    image: honeypot-lab-api:local
+    command: ["python", "-m", "worker.main"]
+    environment:
+      ENVIRONMENT: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      POSTGRES_HOST: db
+      POSTGRES_DB: honeypot
+      POSTGRES_USER: honeypot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD fehlt in der .env}
+      IP_HMAC_KEY: ${IP_HMAC_KEY:?IP_HMAC_KEY fehlt in der .env}
+      INGEST_TOKEN: ${INGEST_TOKEN:?INGEST_TOKEN fehlt in der .env}
+      IPINFO_TOKEN: ${IPINFO_TOKEN:-}
+      IPINFO_DB_PATH: /data/ipinfo.mmdb
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      # lab_egress nur für den Download der IPinfo-Datenbank (Schritt 4.3).
+      - lab_internal
+      - lab_egress
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ipinfo:/data
+    cap_drop:
+      - ALL
+    mem_limit: 384m
+    cpus: 0.5
+    cpu_shares: 256
+    pids_limit: 100
+
+networks:
+  # Ohne Weg ins Internet. Hier hängt die Datenbank.
+  lab_internal:
+    internal: true
+  # Ausgehend für den Worker.
+  lab_egress: {}
+  # Von Hand angelegt (docker network create lab_edge), auch der Caddy der
+  # Webseite hängt darin. Deshalb external.
+  lab_edge:
+    external: true
+
+volumes:
+  pgdata:
+  ipinfo:

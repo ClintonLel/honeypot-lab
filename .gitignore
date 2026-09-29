@@ -23,6 +23,17 @@ cowrie.json*
 tty/
 downloads/
 
+# --- OpenTofu ------------------------------------------------------------------
+# State und Pläne enthalten IDs, IPs und User Data; die Lock-Datei
+# (.terraform.lock.hcl) wird dagegen committet.
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+*.tfplan
+*.tfvars
+*.tfvars.json
+
 # --- Python ------------------------------------------------------------------
 __pycache__/
 *.py[cod]
@@ -37,6 +48,7 @@ htmlcov/
 
 # --- Frontend ----------------------------------------------------------------
 node_modules/
+dist/
 
 # --- Editor / OS -------------------------------------------------------------
 .DS_Store

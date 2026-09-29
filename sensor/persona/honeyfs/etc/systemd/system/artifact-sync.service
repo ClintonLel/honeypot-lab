@@ -1,0 +1,10 @@
+[Unit]
+Description=Upload finished build artifacts to store-01
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=release
+Group=release
+ExecStart=/usr/bin/rsync -a --remove-source-files --exclude=*.partial /srv/build/artifacts/ store-01:/data/incoming/bld-ci-03/
