@@ -1560,3 +1560,45 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
   gehören nicht ins Repo.
 - Weiter offen: Gegen Shell-Zugriffe, die die Deny-Regeln nicht erkennen,
   hilft nur die Sandbox von Claude Code oder Disziplin (`CLAUDE.md`).
+
+## E-036: CI mit Tests gegen PostgreSQL und gitleaks, ohne Deploy
+
+- Status: angenommen
+- Datum: 2026-09-29
+- Quelle: Auftrag des Users
+
+**Entscheidung:**
+
+- `.github/workflows/ci.yml` läuft bei Pull Requests, Pushes auf `main` und
+  von Hand. Drei Jobs: `server` (pytest mit PostgreSQL als Service-Container),
+  `sensor` (pytest mit PyYAML) und `secrets` (gitleaks über die ganze
+  Historie). Kein Deploy-Job.
+- Übersprungene Tests lassen `server` und `sensor` scheitern.
+- Actions sind auf Commit-Hashes gepinnt, `permissions: contents: read`.
+- gitleaks läuft als Binary mit fester Version und geprüftem SHA-256, wie im
+  Website-Demo-Repo. `.gitleaks.toml` erlaubt nur den erfundenen
+  `registration_token` der Persona, und zwar nur genau diesen Wert.
+
+**Begründung:**
+
+- Ohne Datenbank überspringt pytest 58 Server-Tests, darunter Migration,
+  Ingest und Worker. Der Service-Container nutzt dasselbe Image mit Digest wie
+  `docker-compose.server.yml`.
+- Ohne die Prüfung auf übersprungene Tests bliebe der Job grün, wenn die
+  Datenbank einmal nicht erreichbar ist. Ohne PyYAML übersprängen 19
+  Sensor-Tests.
+- Ein Tag wie `v7` lässt sich verschieben, ein Commit-Hash nicht.
+- Kein Deploy, weil der Code per rsync auf den Hauptserver kommt (E-017)
+  und GitHub dafür keinen Zugang bekommen soll.
+- gitleaks 8.30.1 meldet den Köder-Token in `agent.ini` und `prompt.md` als
+  `generic-api-key`. Eine Ausnahme mit `paths` überspringt in dieser Version
+  die ganze Datei, auch mit `condition = "AND"`. Lokal geprüft: Ein anderer
+  Wert in `agent.ini` fiel damit nicht mehr auf. Die Ausnahme hängt deshalb
+  nur am exakten Wert.
+
+**Konsequenzen:**
+
+- Die Datenbanktests laufen jetzt bei jedem PR, nicht nur im Container auf
+  dem Hauptserver. Maßgeblich für den Betrieb bleibt der Lauf dort.
+- Ändert sich der Köder-Token in der Persona, muss `.gitleaks.toml` mit.
+- Neue Action-Versionen kommen nur durch bewusstes Nachziehen der Hashes.

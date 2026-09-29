@@ -1,0 +1,21 @@
+# Konfiguration für gitleaks (siehe .github/workflows/ci.yml, Job "secrets").
+#
+# Bewusst keine Ausnahmen für ganze Dateien oder Verzeichnisse: Jede Ausnahme ist
+# eine Stelle, an der ein echtes Geheimnis unbemerkt durchrutschen kann, also so
+# eng wie möglich.
+
+[extend]
+# Die mitgelieferten Regeln als Grundlage behalten und nur ergänzen.
+useDefault = true
+
+[[allowlists]]
+description = "Köder-Token der Persona, erfunden und ohne Funktion"
+# Die Persona legt in sensor/persona/honeyfs/opt/ci-agent/etc/agent.ini einen
+# erfundenen registration_token als Köder ab (siehe sensor/persona/persona.md),
+# build.py übernimmt ihn in prompt.md. Erlaubt ist nur genau dieser Wert, ein
+# anderer Wert an derselben Stelle schlägt weiter an.
+#
+# Absichtlich ohne "paths": gitleaks 8.30.1 überspringt bei einer globalen
+# Ausnahme mit "paths" die ganze Datei, auch mit condition = "AND". Ein echter
+# Schlüssel in agent.ini fiele dann nicht mehr auf.
+regexes = ['''^cia1-b4c918674beefd3c3bf2557df0d2502d5ec23584$''']
