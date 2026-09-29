@@ -11,12 +11,15 @@
 #
 # Zwei Platzhalter setzt der Loader ein:
 #   {cmd}  Befehlsanfang: Zeilenanfang oder nach ; & | ( { ` $( und Leerraum,
-#          optional ein Vorsatz (sudo, busybox, nohup, exec, command, then,
-#          do, else) und ein fester Pfad (/bin/, /usr/bin/, /usr/local/sbin/ …).
+#          optional bis zu zwei Vorsätze (sudo, busybox, nohup, exec, command,
+#          then, do, else), etwa "then sudo", und ein fester Pfad (/bin/,
+#          /usr/bin/, /usr/local/sbin/ …), auch vor dem Vorsatz: "/bin/sudo".
 #   {end}  Das Befehlswort endet hier: Leerraum, ; & | ) } ` < > oder Ende.
 #
 # Gegen ReDoS (der Loader prüft das und lehnt sonst die ganze Datei ab):
-#   - keine Wiederholung in einer Wiederholung, etwa (a+)+
+#   - in einer Wiederholung mit Obergrenze über 1 (+, *, {n,m}) nur Literale
+#     und Zeichenklassen: keine Alternativen, keine optionalen Teile, keine
+#     weitere Wiederholung. Abgelehnt werden etwa (a+)+ und (a|a)+
 #   - keine Rückverweise
 #   - Wiederholungen über Zeichenklassen vor einem Literal beschränken: {0,256}
 #   - höchstens 512 Zeichen je Muster; der Befehl wird auf 4096 Zeichen gekürzt
