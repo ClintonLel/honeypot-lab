@@ -28,7 +28,7 @@ from app.stream import (
 )
 
 NOW = datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc)
-ALLOWED_KEYS = {"ts", "variant", "country", "event", "command"}
+ALLOWED_KEYS = {"ts", "variant", "country", "event", "command", "techniques"}
 
 
 def event(**fields):
@@ -57,7 +57,18 @@ def test_a_command_becomes_a_small_message():
         "country": "DE",
         "event": "command",
         "command": "uname -a",
+        "techniques": ["T1082"],
     }
+
+
+def test_techniques_come_from_the_whole_command_not_the_preview():
+    message = stream_message(event(input="echo " + "x" * 200 + "; whoami"), None)
+    assert "whoami" not in message["command"]
+    assert message["techniques"] == ["T1033"]
+
+
+def test_a_command_without_technique_has_an_empty_list():
+    assert stream_message(event(input="ls -la"), None)["techniques"] == []
 
 
 def test_the_preview_is_at_most_80_characters():
@@ -94,6 +105,7 @@ def test_only_commands_carry_a_preview():
     message = stream_message(event(eventid="cowrie.session.connect"), "DE")
     assert message["event"] == "connect"
     assert "command" not in message
+    assert "techniques" not in message
 
 
 # --- Verteiler --------------------------------------------------------------

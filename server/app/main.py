@@ -5,7 +5,8 @@ liest niemand beim bloßen Import die Einstellungen, und Tests bauen sich ihre
 eigene App mit eigenen Werten.
 
 Endpunkte: ``GET /health``, ``POST /ingest`` (Schritt 4.1), ``GET /stream``
-und ``GET /stats/*`` (Schritt 5.1).
+und ``GET /stats/*`` (Schritt 5.1). Befehle bekommen beim Ingest ihre
+ATT&CK-Techniken (Schritt 6.1).
 
 Erreichbar ist die App ausschließlich über Caddy auf
 ``https://api.tomkaufmann.dev`` (E-021). CORS setzt Caddy, nicht diese App,
@@ -25,6 +26,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.attack import default_rules
 from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory
 from app.enrichment import Enricher
@@ -69,12 +71,18 @@ async def health(reachable: bool = Depends(database_reachable)) -> JSONResponse:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = get_settings()
     configure_logging(settings.log_level)
+    # Eine kaputte Regeldatei soll den Start verhindern, nicht erst den
+    # ersten Befehl im Ingest scheitern lassen (E-037).
+    rules = default_rules()
     engine = create_engine(settings)
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
     app.state.enricher = Enricher(settings.ipinfo_db_path)
-    logger.info("api gestartet", extra={"environment": settings.environment})
+    logger.info(
+        "api gestartet",
+        extra={"environment": settings.environment, "attack_version": rules.attack_version},
+    )
     try:
         yield
     finally:

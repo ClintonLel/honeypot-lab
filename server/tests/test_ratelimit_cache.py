@@ -182,8 +182,8 @@ def test_the_breakdown_derives_sessions_without_commands():
 
 
 def test_recent_commands_come_oldest_first_and_short():
-    newer = (datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc), "a", "NL", "x" * 200)
-    older = (datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc), "b", None, "uname -a")
+    newer = (datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc), "a", "NL", "x" * 200, [])
+    older = (datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc), "b", None, "uname -a", ["T1082"])
     messages = recent_messages([newer, older])
     assert messages[0] == {
         "ts": "2026-09-18T12:00:00Z",
@@ -191,5 +191,7 @@ def test_recent_commands_come_oldest_first_and_short():
         "country": None,
         "event": "command",
         "command": "uname -a",
+        "techniques": ["T1082"],
     }
     assert len(messages[1]["command"]) == 80 and messages[1]["command"].endswith("…")
+    assert messages[1]["techniques"] == []

@@ -6,6 +6,9 @@
   ohne Statistik neu.
 - ``aufraeumen``: löscht Roh-Events nach 90 Tagen, Sitzungen und Statistik
   bleiben.
+- ``attack``: ordnet alle gespeicherten Befehle neu den ATT&CK-Techniken zu
+  (Schritt 6.1). Nur von Hand, nach einer Änderung an ``rules/attack.yml``;
+  neue Befehle taggt schon der Ingest.
 
 Einen Job zur Rotation des HMAC-Schlüssels gibt es bewusst nicht. Der Bauplan
 sah ihn vor, E-022 hat entschieden, dass der Schlüssel fest bleibt.
@@ -33,6 +36,7 @@ from urllib.parse import urlencode
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.attack import default_rules
 from app.config import Settings
 
 # --- IPinfo ------------------------------------------------------------------
@@ -363,4 +367,75 @@ async def cleanup_raw_events(ctx: Context) -> dict[str, Any]:
         "geloescht": deleted,
         "stichtag": cutoff.date().isoformat(),
         "statistik_tage_vorher": backfill["tage"],
+    }
+
+
+# --- ATT&CK (Schritt 6.1) ------------------------------------------------------
+
+TAG_BATCH = 2000
+UNTAGGED_LIMIT = 100
+
+TAG_SELECT_SQL = text(
+    "SELECT id, command, techniques FROM commands WHERE id > :after ORDER BY id LIMIT :batch"
+)
+TAG_UPDATE_SQL = text("UPDATE commands SET techniques = CAST(:techniques AS jsonb) WHERE id = :id")
+
+UNTAGGED_SQL = text(
+    """
+    SELECT command, count(*) AS n
+    FROM commands
+    WHERE techniques = '[]'::jsonb
+    GROUP BY command
+    ORDER BY n DESC, command
+    LIMIT :limit
+    """
+)
+COUNT_SQL = text(
+    "SELECT count(*), count(*) FILTER (WHERE techniques = '[]'::jsonb) FROM commands"
+)
+
+
+async def tag_commands(ctx: Context) -> dict[str, Any]:
+    """Wendet die aktuellen Regeln auf alle Befehle an. Beliebig oft wiederholbar.
+
+    Geschrieben wird nur, wo sich das Ergebnis ändert. Jede Portion läuft in
+    einer eigenen Transaktion, damit der Ingest nicht lange wartet.
+    """
+    engine = _require_engine(ctx)
+    rules = default_rules()
+    checked = changed = 0
+    after = 0
+    while True:
+        async with engine.begin() as connection:
+            rows = (await connection.execute(TAG_SELECT_SQL, {"after": after, "batch": TAG_BATCH})).all()
+            if not rows:
+                break
+            updates = []
+            for command_id, command, current in rows:
+                techniques = rules.classify(command)
+                if list(current or []) != techniques:
+                    updates.append({"id": command_id, "techniques": json.dumps(techniques)})
+            if updates:
+                await connection.execute(TAG_UPDATE_SQL, updates)
+        checked += len(rows)
+        changed += len(updates)
+        after = rows[-1][0]
+
+    return {"geprueft": checked, "geaendert": changed, "attack_version": rules.attack_version}
+
+
+async def untagged_report(ctx: Context, limit: int = UNTAGGED_LIMIT) -> dict[str, Any]:
+    """Die häufigsten Befehle ohne Technik, für den Report aus Schritt 6.1.
+
+    Die Befehle sind Angreifertext. Sie gehen nie ins Log, sondern nur an
+    ``worker.main``, das sie für das Terminal aufbereitet.
+    """
+    engine = _require_engine(ctx)
+    async with engine.connect() as connection:
+        total, untagged = (await connection.execute(COUNT_SQL)).one()
+        rows = (await connection.execute(UNTAGGED_SQL, {"limit": limit})).all()
+    return {
+        "befehle": int(total),
+        "ohne_technik": int(untagged),
+        "haeufigste": [(command, int(count)) for command, count in rows],
     }
