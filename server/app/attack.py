@@ -70,16 +70,21 @@ TACTICS = frozenset(
     }
 )
 
+# Bis zu drei "./" hinter einem Schrägstrich: /bin/./uname, /./usr/bin/.
+# Nur Literale in der Wiederholung, nach oben beschränkt.
+_DOT = r"(?:\./){0,3}"
 # Fester Pfad vor einem Befehlswort: /bin/, /usr/bin/, /usr/local/sbin/ …
-_PATH = r"(?:/(?:usr/)?(?:local/)?s?bin/)?"
+_PATH = rf"(?:/{_DOT}(?:usr/{_DOT})?(?:local/{_DOT})?s?bin/{_DOT})?"
 # Ein Vorsatz vor dem eigentlichen Befehl, auch mit Pfad: "then ", "/bin/sudo ".
 _PREFIX = rf"(?:{_PATH}(?:sudo|busybox|nohup|exec|command|then|do|else)\s+)?"
 
 # Platzhalter aus der Regeldatei, siehe dort. Zwei Vorsätze ("then sudo")
 # stehen als zwei optionale Stellen hintereinander, nicht als Wiederholung:
-# So bleibt die Prüfung in _check_structure wirksam.
+# So bleibt die Prüfung in _check_structure wirksam. {pipe} ist {cmd} direkt
+# hinter einer einfachen Pipe, nicht hinter "||".
 PLACEHOLDERS = {
     "{cmd}": rf"(?:^|[;&|({{`\n]|\$\()\s*{_PREFIX}{_PREFIX}{_PATH}",
+    "{pipe}": rf"(?<!\|)\|(?!\|)\s*{_PREFIX}{_PREFIX}{_PATH}",
     "{end}": r"(?![^\s;&|)}`<>])",
 }
 
