@@ -56,6 +56,7 @@ bei der Übernahme ausformuliert.
 | E-036 | CI mit Tests gegen PostgreSQL und gitleaks, ohne Deploy     | angenommen                                     |
 | E-037 | ATT&CK-Regeln als Daten, Zuordnung beim Ingest              | angenommen, Regeln ergänzt durch E-038         |
 | E-038 | ATT&CK-Regeln erweitert, T1083 enger als bei MITRE          | angenommen                                     |
+| E-039 | Kampagnen über normalisierte Befehlsfolgen, Labels als Daten | angenommen                                     |
 
 ---
 
@@ -1746,3 +1747,85 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
   Treffer und Beinahe-Treffer, von Hand geschrieben.
 - Ob T1083 zu eng ist, zeigt der Bericht von `run attack --bericht` über
   Befehle ohne Technik. Eine Lockerung braucht einen neuen Eintrag.
+
+## E-039: Kampagnen über normalisierte Befehlsfolgen, Labels als Daten
+
+- Status: angenommen
+- Datum: 2026-09-30
+- Quelle: Auftrag des Users, Schritt 6.2
+
+**Entscheidung:**
+
+- Sitzungen mit gleicher **normalisierter Befehlsfolge** bilden eine
+  Kampagne. Die Normalisierung in `server/app/campaigns.py` ersetzt
+  entschärfte URLs und IPs, Passwörter in `user:pw`-Form, Hex ab 16 Zeichen,
+  Token aus Buchstaben und Ziffern ab 8 Zeichen und freistehende Zahlen
+  durch Platzhalter und vereinheitlicht Leerraum. SSH-Public-Keys werden zu
+  `<KEY:…>` mit den ersten 12 Hex von SHA-256 über den Body.
+- **Fingerprint** = SHA-256 über die Art der Sitzung (`exec` oder
+  `interactive`) und die Folge der normalisierten Befehle, direkte
+  Wiederholungen einmal. Sitzungen ohne Befehl haben keinen.
+- Eine Kampagne entsteht erst ab **5 Sitzungen** (`MIN_SESSIONS`).
+- Der Worker-Job `campaigns` baut alles stündlich neu auf, schreibt nur
+  Änderungen, löscht verschwundene Fingerprints und setzt
+  `sessions.campaign_id`. Alles in einer Transaktion mit
+  `SET LOCAL lock_timeout = '5s'`; die Sitzungen werden nach `id` sortiert
+  und nur bei Änderung aktualisiert.
+- Migration **0002** ergänzt `campaigns.sources`, `campaigns.asns` und
+  `campaigns.median_interval_s`.
+- **Labels als Daten** in `server/rules/campaigns.yml`: Fingerprint-Präfix
+  (12 Hex) → Label (höchstens 64 Zeichen, eindeutig) und Beschreibung. In der
+  Datenbank kommen beide nur von dort.
+- `/stats/campaigns` zeigt nur Kampagnen **mit Label** und ergänzt `sources`,
+  `asns` und `median_interval_s`. Alle bisherigen Felder bleiben.
+- `run campaigns --bericht` zeigt die 20 größten Kampagnen im Terminal, mit
+  Präfix, `p3` (erste 6 Hex von SHA-256 über die ersten drei normalisierten
+  Befehle), Länge der Folge und den ersten drei Befehlen. `p3` steht nur im
+  Bericht.
+
+**Begründung:**
+
+- `commands.command_hash` ist der Hash des rohen Befehls. Jede
+  `chpasswd`-Zeile mit neuem Zufallspasswort hätte einen eigenen Hash, und
+  aus einem Bot würden tausende Ein-Sitzungs-Kampagnen.
+- SSH-Schlüssel gehören einem bestimmten Angreifer. Ein gemeinsamer
+  Platzhalter würde fremde Akteure zusammenwerfen, nur weil sie dasselbe
+  Skript nutzen.
+- **Art im Fingerprint:** `fingerprint` ist eindeutig und `kind` eine Spalte.
+  Dieselben Befehle per Exec und in einer Shell kommen in der Praxis von
+  verschiedenen Werkzeugen; zusammen hätte die Kampagne keine eindeutige Art.
+- **Ganze Folge statt der ersten N Befehle:** So bleiben Skripte getrennt,
+  die gleich beginnen und verschieden enden. Der Preis: Bots, die auf die
+  Ausgabe der Shell reagieren, können sich über Variante A und B auf
+  getrennte Kampagnen verteilen. `p3` im Bericht macht das sichtbar, ohne die
+  Befehle vergleichen zu müssen. Zeigt es sich häufig, braucht ein Wechsel
+  auf ein Präfix einen neuen Eintrag.
+- Die Mindestgröße verhindert zehntausende Kampagnen aus Einzelsitzungen,
+  die niemand ansehen kann.
+- Verschiedene Download-Adressen werden zu `<URL>`. Eine Kampagne soll ein
+  Werkzeug beschreiben, nicht die Infrastruktur, die es gerade nutzt.
+- Labels im Repo sind nachvollziehbar, durchlaufen ein Review und überleben
+  jeden Neuaufbau. Von Hand gesetzte Werte in der Datenbank wären beim
+  nächsten Lauf weg oder, schlimmer, ungeprüft öffentlich.
+- Nur gelabelte Kampagnen sind öffentlich: Ein Label heißt, dass jemand die
+  Kampagne angesehen hat. Das Frontend nutzt das Label als Anzeigename und
+  React-Key, deshalb muss es eindeutig sein.
+- Der `lock_timeout` hält einen hängenden Lauf davon ab, den Ingest zu
+  blockieren. Sortierte Updates sperren immer in derselben Reihenfolge.
+- Die Muster folgen den Regeln aus E-037 gegen ReDoS und werden mit derselben
+  Strukturprüfung getestet.
+
+**Konsequenzen:**
+
+- Nach dem Deploy: `alembic upgrade head`, dann `run campaigns` von Hand
+  (Anleitung in `server/README.md`). Danach hält der Zeitplan alles aktuell.
+- `/stats/campaigns` bleibt leer, bis das erste Label in
+  `server/rules/campaigns.yml` steht und ausgerollt ist.
+- Ändert sich die Normalisierung, ändern sich Fingerprints. Die Kampagnen
+  entstehen neu, die Präfixe in `campaigns.yml` müssen dann neu vergeben
+  werden (`labels_ohne_kampagne` im Log zeigt die verwaisten).
+- `commands.command_hash` bleibt unverändert und wird für Kampagnen nicht
+  genutzt.
+- Der Job hält je Sitzung mit Befehlen ein paar Felder im Speicher. Bei
+  zehntausenden Sitzungen sind das wenige MB; wächst das deutlich, braucht
+  es eine Aggregation in SQL.
