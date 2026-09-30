@@ -340,7 +340,12 @@ async def recent(request: Request, response: Response) -> dict[str, Any]:
 
 @router.get("/campaigns")
 async def campaigns(request: Request, response: Response) -> dict[str, Any]:
-    """Die größten Kampagnen. Leer, bis Schritt 6.2 die Tabelle füllt."""
+    """Die größten Kampagnen mit Label (Schritt 6.2, E-039).
+
+    Kampagnen ohne Label hat noch niemand angesehen; sie bleiben intern. Die
+    Herkunft steht nur als Anzahl darin (``sources``, ``asns``), nie als
+    ip_hash.
+    """
     cached(response)
 
     async def compute() -> dict[str, Any]:
@@ -355,7 +360,11 @@ async def campaigns(request: Request, response: Response) -> dict[str, Any]:
                 Campaign.sessions_b,
                 Campaign.countries,
                 Campaign.techniques,
+                Campaign.sources,
+                Campaign.asns,
+                Campaign.median_interval_s,
             )
+            .where(Campaign.label.is_not(None))
             .order_by((Campaign.sessions_a + Campaign.sessions_b).desc(), Campaign.id)
             .limit(TOP_CAMPAIGNS)
         )
@@ -372,6 +381,9 @@ async def campaigns(request: Request, response: Response) -> dict[str, Any]:
                     "sessions": {"a": row["sessions_a"], "b": row["sessions_b"]},
                     "countries": row["countries"],
                     "techniques": row["techniques"],
+                    "sources": row["sources"],
+                    "asns": row["asns"],
+                    "median_interval_s": row["median_interval_s"],
                 }
                 for row in rows
             ]

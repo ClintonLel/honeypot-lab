@@ -8,6 +8,8 @@ Aufruf im Container:
     python -m worker.main run alle
     python -m worker.main run attack             # Befehle neu taggen (nur von Hand)
     python -m worker.main run attack --bericht   # dazu die häufigsten ohne Tag
+    python -m worker.main run campaigns          # Kampagnen neu aufbauen
+    python -m worker.main run campaigns --bericht  # dazu die 20 größten
 
 Jeder Lauf loggt Dauer und Ergebnis. Ein fehlgeschlagener Job beendet den
 Worker nicht, er kommt beim nächsten Takt wieder dran.
@@ -71,8 +73,10 @@ def _ipinfo_first_run(ctx: jobs.Context) -> datetime:
 IPINFO = Job("ipinfo", timedelta(days=1), jobs.update_ipinfo, _ipinfo_first_run)
 STATISTIK = Job("statistik", timedelta(hours=1), jobs.aggregate_daily_stats, _right_away)
 AUFRAEUMEN = Job("aufraeumen", timedelta(days=1), jobs.cleanup_raw_events, _right_away)
+# Voller Neuaufbau der Kampagnen, stündlich wie die Statistik (E-039).
+CAMPAIGNS = Job("campaigns", timedelta(hours=1), jobs.build_campaigns, _right_away)
 
-JOBS = (IPINFO, STATISTIK, AUFRAEUMEN)
+JOBS = (IPINFO, STATISTIK, AUFRAEUMEN, CAMPAIGNS)
 
 # Läuft nur auf Zuruf, nicht im Zeitplan und nicht bei "alle": Neue Befehle
 # taggt schon der Ingest, nachgetaggt wird nur nach einer Regeländerung (E-037).
@@ -134,6 +138,44 @@ def printable(command: str, width: int = REPORT_WIDTH) -> str:
     return visible if len(visible) <= width else visible[: width - 1] + "…"
 
 
+def format_interval(seconds: int | None) -> str:
+    """Abstand grob und kurz: 42s, 7m, 3h, 2d."""
+    if seconds is None:
+        return "–"
+    for unit, size, limit in (("s", 1, 120), ("m", 60, 7200), ("h", 3600, 172800)):
+        if seconds < limit:
+            return f"{round(seconds / size)}{unit}"
+    return f"{round(seconds / 86400)}d"
+
+
+def format_campaign_report(report: dict[str, Any]) -> str:
+    """Tabelle der größten Kampagnen, darunter je die ersten Befehle.
+
+    ``p3`` ist ein Hash über die ersten drei Befehle: Teilen sich mehrere
+    Zeilen denselben Wert, beginnen die Kampagnen gleich und laufen erst
+    später auseinander.
+    """
+    campaigns = report["groesste"]
+    lines = [
+        f"Kampagnen: {report['kampagnen']}, davon mit Label: {report['gelabelt']}",
+        f"Die {len(campaigns)} größten:",
+        f"{'praefix':<12}  {'p3':<6}  {'art':<11}  {'a':>6}  {'b':>6}  {'quellen':>7}"
+        f"  {'asns':>5}  {'abstand':>7}  {'befehle':>7}  label",
+    ]
+    for c in campaigns:
+        lines.append(
+            f"{c['prefix']:<12}  {c['p3']:<6}  {c['kind']:<11}  {c['sessions_a']:>6}"
+            f"  {c['sessions_b']:>6}  {c['sources']:>7}  {c['asns']:>5}"
+            f"  {format_interval(c['median_interval_s']):>7}  {c['length']:>7}"
+            f"  {printable(c['label'] or '–', REPORT_WIDTH)}"
+        )
+        lines += [
+            printable(f"    {number}. {command}")
+            for number, command in enumerate(c["commands"], start=1)
+        ]
+    return "\n".join(lines)
+
+
 def format_report(report: dict[str, Any]) -> str:
     total, untagged = report["befehle"], report["ohne_technik"]
     share = f"{untagged / total:.0%}" if total else "–"
@@ -143,6 +185,13 @@ def format_report(report: dict[str, Any]) -> str:
     ]
     lines += [f"{count:>8}  {printable(command)}" for command, count in report["haeufigste"]]
     return "\n".join(lines)
+
+
+# Berichte für --bericht: Job -> (Daten holen, fürs Terminal formatieren).
+REPORTS = {
+    ATTACK.name: (jobs.untagged_report, format_report),
+    CAMPAIGNS.name: (jobs.campaigns_report, format_campaign_report),
+}
 
 
 async def run_forever(ctx: jobs.Context, stopping: asyncio.Event) -> None:
@@ -175,11 +224,12 @@ async def main(argv: list[str] | None = None) -> int:
     once.add_argument(
         "--bericht",
         action="store_true",
-        help="attack: danach die häufigsten Befehle ohne Technik ausgeben",
+        help="attack: danach die häufigsten Befehle ohne Technik ausgeben; "
+        "campaigns: danach die größten Kampagnen",
     )
     args = parser.parse_args(argv)
-    if args.command == "run" and args.bericht and args.job != ATTACK.name:
-        parser.error("--bericht gibt es nur für attack")
+    if args.command == "run" and args.bericht and args.job not in REPORTS:
+        parser.error("--bericht gibt es nur für attack und campaigns")
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -198,7 +248,8 @@ async def main(argv: list[str] | None = None) -> int:
                 results.append(await run_job(job, ctx, **kwargs))
             if args.bericht and all(results):
                 # Auf stdout, nicht ins Log: Die Befehle sind Angreifertext.
-                print(format_report(await jobs.untagged_report(ctx)))
+                collect, render = REPORTS[args.job]
+                print(render(await collect(ctx)))
             return 0 if all(results) else 1
 
         stopping = asyncio.Event()

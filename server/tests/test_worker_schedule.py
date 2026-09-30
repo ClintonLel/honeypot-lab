@@ -26,7 +26,7 @@ def ctx_with_file(tmp_path: Path, age: timedelta | None) -> jobs.Context:
 
 
 def test_the_jobs_from_the_plan_are_there():
-    assert {job.name for job in JOBS} == {"ipinfo", "statistik", "aufraeumen"}
+    assert {job.name for job in JOBS} == {"ipinfo", "statistik", "aufraeumen", "campaigns"}
 
 
 def test_there_is_no_key_rotation():
@@ -42,6 +42,7 @@ def test_the_intervals_match_the_plan():
         "ipinfo": timedelta(days=1),
         "statistik": timedelta(hours=1),
         "aufraeumen": timedelta(days=1),
+        "campaigns": timedelta(hours=1),
     }
 
 
@@ -124,12 +125,13 @@ def test_the_attack_job_runs_only_on_request():
     assert main.BY_NAME["attack"] is main.ATTACK
 
 
-def test_the_report_is_only_for_the_attack_job(capsys):
+def test_the_report_is_only_for_attack_and_campaigns(capsys):
     import pytest
 
     with pytest.raises(SystemExit):
         asyncio.run(main.main(["run", "statistik", "--bericht"]))
-    assert "--bericht" in capsys.readouterr().err
+    assert "--bericht gibt es nur für attack und campaigns" in capsys.readouterr().err
+    assert set(main.REPORTS) == {"attack", "campaigns"}
 
 
 def test_control_characters_cannot_steer_the_terminal():
@@ -156,3 +158,56 @@ def test_the_report_names_counts_and_share():
 
 def test_an_empty_report_does_not_divide_by_zero():
     assert "(–)" in main.format_report({"befehle": 0, "ohne_technik": 0, "haeufigste": []})
+
+
+# --- Kampagnen (Schritt 6.2) ----------------------------------------------------------
+
+
+def test_the_campaign_job_runs_hourly_and_right_away():
+    assert main.CAMPAIGNS in JOBS
+    assert main.CAMPAIGNS.run is jobs.build_campaigns
+    ctx = jobs.Context(settings=Settings(environment="test"), now=lambda: NOW)
+    assert main.CAMPAIGNS.first_run(ctx) == NOW
+
+
+def campaign(**overrides):
+    return {
+        "prefix": "0123456789ab",
+        "p3": "a1b2c3",
+        "label": None,
+        "kind": "exec",
+        "sessions_a": 12,
+        "sessions_b": 3,
+        "sources": 10,
+        "asns": 4,
+        "median_interval_s": 42,
+        "length": 5,
+        "commands": ["uname -a", "echo \x1b[2J" + "x" * 500],
+        **overrides,
+    }
+
+
+def test_the_campaign_report_shows_prefix_figures_and_commands():
+    text = main.format_campaign_report(
+        {"kampagnen": 3, "gelabelt": 1, "groesste": [campaign(), campaign(label="Probe", p3="ffffff")]}
+    )
+    lines = text.splitlines()
+    assert lines[0] == "Kampagnen: 3, davon mit Label: 1"
+    assert lines[3].split() == ["0123456789ab", "a1b2c3", "exec", "12", "3", "10", "4", "42s", "5", "–"]
+    assert lines[4] == "    1. uname -a"
+    assert lines[5].startswith("    2. echo \\x1b[2J") and len(lines[5]) == main.REPORT_WIDTH
+    assert lines[6].split()[-1] == "Probe" and lines[6].split()[1] == "ffffff"
+    assert "\x1b" not in text
+
+
+def test_an_empty_campaign_report():
+    text = main.format_campaign_report({"kampagnen": 0, "gelabelt": 0, "groesste": []})
+    assert text.splitlines()[:2] == ["Kampagnen: 0, davon mit Label: 0", "Die 0 größten:"]
+
+
+def test_intervals_are_short_and_readable():
+    assert main.format_interval(None) == "–"
+    assert main.format_interval(42) == "42s"
+    assert main.format_interval(7 * 60) == "7m"
+    assert main.format_interval(3 * 3600) == "3h"
+    assert main.format_interval(2 * 86400) == "2d"
