@@ -133,4 +133,45 @@ scheitern, bevor er etwas schreibt. Die Tests prüfen die Datei im Repo.
 
 | Präfix | Label | Art | Beschreibung | seit |
 |--------|-------|-----|--------------|------|
-| –      | –     | –   | noch keine   | –    |
+| `611080a1c75e` | System-Abfrage (ausführlich) | exec | Fragt mit einem Befehl detaillierte Systeminformationen (Kernel, Hostname, Architektur) ab. Fällt durch eine extrem hohe Anzahl an Sitzungen von wenigen Quellen auf. | 30.09.2026 |
+| `37fa39ae478f` | SSH-Key-Persistenz, breit verteilt | exec | Legt einen SSH-Schlüssel ab und entzieht Schreibrechte auf das Verzeichnis, um die eigene Persistenz abzusichern. Wird von vielen unterschiedlichen Quellen genutzt und ähnelt dem Verhalten bekannter Botnets. | 30.09.2026 |
+| `8c3baa7a58ac` | SSH-Key-Persistenz mit Systemanalyse | exec | Teilt sich die Startbefehle mit der breit verteilten Kampagne zur SSH-Persistenz, führt danach aber noch weitere Befehle aus, um unter anderem CPU-Details zu ermitteln (oft eine Vorbereitung für Krypto-Mining). | 30.09.2026 |
+| `7b935cc643ca` | System-Abfrage mit manipuliertem PATH | exec | Setzt gezielt die PATH-Variable der Shell neu und versucht über verschiedene direkte Pfade verlässlich die Architektur des Systems zu bestimmen. | 30.09.2026 |
+| `72091e609000` | System-Abfrage (absoluter Pfad) | exec | Nutzt den absoluten Pfad zum Binärprogramm für die Abfrage von Systeminformationen. Dies dient oft dazu, einfache Verschleierungen durch Aliase auf dem Zielsystem zu umgehen. | 30.09.2026 |
+| `02db2dbb7023` | Dropper-Routine (Setup & Clean) | exec | Führt Skripte aus, um das System zu bereinigen und für weitere Aktionen vorzubereiten. Legt am Ende einen SSH-Schlüssel ab. Dieses Vorgehen ähnelt bekannten Dropper-Familien wie Outlaw. | 30.09.2026 |
+| `11719f310a95` | System-Abfrage mit Echo-Marker | exec | Fragt das System ab und gibt direkt danach eine festgelegte Zeichenfolge per Echo aus. Ein solches Vorgehen dient Automatismen meist dazu zu prüfen, ob die Kommandozeile reagiert. | 30.09.2026 |
+
+## Erster Lauf (30.09.2026, nur Variante A)
+
+Zusammenfassung aus Worker-Log und `run campaigns --bericht`, ohne Befehle im
+Klartext. Zahlen sind eine Momentaufnahme; aktuelle Werte liefert
+`/stats/campaigns`.
+
+- 20.358 Sitzungen mit Befehlen, nur 64 verschiedene Befehlsfolgen,
+  27 Kampagnen. 20.307 Sitzungen (99,7 %) gehören zu einer Kampagne. Fast alle
+  Befehle kommen von Automatik.
+- **Ein Werkzeug stellt 72 % der Sitzungen:** `611080a1c75e` mit 14.567
+  Sitzungen von 43 Quellen in 11 ASNs, im Median alle 9 Sekunden. Wenige
+  Quellen, die hämmern, kein breites Botnetz. Jede Gesamtkennzahl ohne
+  Aufteilung nach Kampagne wird von ihm bestimmt.
+- **Breit verteilt:** `37fa39ae478f` (SSH-Key-Persistenz) mit 3.219 Sitzungen
+  von 570 Quellen in 281 ASNs, im Mittel etwa 6 Sitzungen je Quelle.
+  `8c3baa7a58ac` beginnt mit denselben zwei Befehlen und führt danach 16
+  weitere aus (78 Sitzungen, 59 Quellen). Dieselbe Familie tritt also schon
+  in Variante A in zwei Längen auf, obwohl die Shell immer gleich antwortet.
+- **Einzelbefehl-Werkzeug:** Rund elf Kampagnen bestehen aus genau einem
+  Erkundungsbefehl (Hostname, Benutzer, Verzeichnis, SSH-Version,
+  Verzeichnisinhalt, Netzwerk, Umgebung, Historie, Laufzeit, Mounts,
+  Prozesse), je 57–205 Sitzungen von 3–5 Quellen, Abstand 30–120 Minuten.
+  Vermutlich ein Werkzeug, das für jeden Befehl eine eigene Sitzung öffnet;
+  der Fingerprint über die Befehlsfolge zerlegt es. Noch nicht belegt: Dafür
+  fehlt im Bericht die Überlappung der Quellen. Diese Kampagnen haben
+  bewusst noch kein Label, damit `/lab` nicht nur Einzelbefehle zeigt.
+- **Grenze von `p3`:** Bei Folgen mit weniger als drei Befehlen hasht `p3`
+  weniger Befehle. `37fa39ae478f` und `8c3baa7a58ac` haben deshalb
+  verschiedene `p3`, obwohl die eine Folge der Anfang der anderen ist.
+
+Folgen für `docs/method.md` (7.1): Befehle pro Sitzung taugt wegen des
+Einzelbefehl-Werkzeugs nur eingeschränkt als Messgröße; A und B besser je
+Kampagne bzw. Werkzeug vergleichen, und bei Familien mit mehreren Längen den
+Anteil der langen Variante statt ihres bloßen Auftretens.
