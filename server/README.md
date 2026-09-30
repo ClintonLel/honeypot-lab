@@ -18,15 +18,17 @@ die API über Caddy erreichbar (E-021).
 | `app/stats.py`              | `GET /stats/*`: Übersicht, Länder, Heatmap, Exec/interaktiv, Kampagnen |
 | `app/attack.py`             | ATT&CK-Regeln laden, prüfen (ReDoS) und auf Befehle anwenden |
 | `rules/attack.yml`          | die Regeln selbst: Muster → Technik, mit ATT&CK-Version (Schritt 6.1) |
+| `app/campaigns.py`          | Befehle normalisieren, Fingerprint je Sitzung, Labels laden (Schritt 6.2) |
+| `rules/campaigns.yml`       | Labels der Kampagnen: Fingerprint-Präfix → Label und Beschreibung |
 | `app/ratelimit.py`          | Rate-Limit pro Client, Schlüssel ohne Adresse               |
 | `app/config.py`             | Einstellungen aus Umgebungsvariablen, Secrets als `SecretStr` |
 | `app/db.py`                 | Engine und Sessions (SQLAlchemy 2, psycopg 3, asynchron)    |
 | `app/models.py`             | die sieben Tabellen aus Schritt 3.3                        |
 | `app/hashing.py`            | HMAC-SHA256 der Quell-IPs (E-009, E-022)                   |
 | `app/logging.py`            | JSON-Logs                                                  |
-| `app/migrations/`           | Alembic, `0001_grundschema.py` legt alles an               |
+| `app/migrations/`           | Alembic, `0001_grundschema.py` legt alles an, `0002` ergänzt Kennzahlen der Kampagnen |
 | `worker/main.py`            | Zeitplan und Einzelläufe der Jobs                          |
-| `worker/jobs.py`            | `ipinfo`, `statistik`, `aufraeumen` (Schritt 4.3), `attack` (6.1) |
+| `worker/jobs.py`            | `ipinfo`, `statistik`, `aufraeumen` (Schritt 4.3), `attack` (6.1), `campaigns` (6.2) |
 | `tests/`                    | Tests ohne Datenbank und, mit Marker `db`, mit Datenbank   |
 | `../docker-compose.server.yml` | `db`, `api`, `worker` mit Limits und Netzen              |
 
@@ -191,7 +193,7 @@ sudo docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPe
 | `GET /stats/countries?days=30`         | Sitzungen je Land und Variante, die 50 häufigsten      |
 | `GET /stats/heatmap?days=28&variant=all` | 7 × 24, Montag bis Sonntag, Stunde in UTC             |
 | `GET /stats/breakdown?days=30`         | je Variante: interaktiv, Exec, ohne Befehl              |
-| `GET /stats/campaigns`                 | die 10 größten Kampagnen (ab Schritt 6.2)              |
+| `GET /stats/campaigns`                 | die 10 größten Kampagnen mit Label (Schritt 6.2, E-039) |
 | `GET /stats/recent`                    | die letzten 12 Befehle in der Form der Stream-Meldungen, älteste zuerst (Schritt 5.2) |
 
 Statistik wird 30 Sekunden gecacht, 60 Anfragen pro Minute und höchstens 3
@@ -288,6 +290,7 @@ Zahlen und Länder, keine Befehle.
 | `ipinfo`     | täglich   | Prüfsumme der IPinfo-Lite-Datenbank abfragen, nur bei Änderung laden, prüfen und atomar ersetzen |
 | `statistik`  | stündlich | `daily_stats` für heute, gestern und jeden Tag ohne Statistik neu rechnen |
 | `aufraeumen` | täglich   | fehlende Statistik nachrechnen, dann Roh-Events älter als 90 Tage löschen |
+| `campaigns`  | stündlich | Kampagnen neu aufbauen, Labels aus `rules/campaigns.yml` übernehmen (Schritt 6.2) |
 
 Einen Job zur Rotation des HMAC-Schlüssels gibt es nicht, der Schlüssel bleibt
 fest (E-022). Jeder Lauf schreibt `job fertig` oder `job fehlgeschlagen` mit
@@ -380,6 +383,46 @@ Die Ausgabe geht nur ins Terminal, nicht ins Log. Sie ist Angreifertext:
 entschärft, auf 200 Zeichen gekürzt und mit sichtbar gemachten Steuerzeichen
 (`\x1b` statt Escape-Sequenz). Trotzdem nur lesen, nichts daraus kopieren und
 ausführen, und nicht ungeprüft an einen Coding-Agenten geben.
+
+## Kampagnen (Schritt 6.2)
+
+Der Job `campaigns` bündelt Sitzungen mit gleicher normalisierter
+Befehlsfolge zu Kampagnen, ab 5 Sitzungen je Fingerprint (E-039). Er läuft
+stündlich und bei `run alle`, jedes Mal als voller Neuaufbau. Labels kommen
+nur aus `rules/campaigns.yml`; `/stats/campaigns` zeigt nur Kampagnen mit
+Label. Wie Fingerprint und Normalisierung funktionieren und wie man ein Label
+vergibt, steht in `docs/campaigns.md`.
+
+**Ausrollen.** Nach rsync und `build` (siehe oben) die Migration 0002, dann
+`up -d`, dann einmal von Hand laufen lassen. `<PFAD>` steht für das
+Projektverzeichnis auf dem Hauptserver:
+
+```bash
+cd <PFAD> && sudo docker compose -f docker-compose.server.yml run --rm api alembic upgrade head
+```
+
+```bash
+cd <PFAD> && sudo docker compose -f docker-compose.server.yml exec worker python -m worker.main run campaigns
+```
+
+Das Ergebnis steht im Log: `sitzungen`, `fingerprints`, `kampagnen`, `neu`,
+`geaendert`, `entfernt`, `zugeordnet`, `gelabelt` und
+`labels_ohne_kampagne` (Präfixe aus der Datei, zu denen es keine Kampagne
+gibt). Hält der Ingest eine Sitzung länger als 5 Sekunden gesperrt, bricht der
+Job ab (`OperationalError`) und versucht es beim nächsten Takt neu.
+
+**Bericht der größten Kampagnen.** Baut erst neu auf und gibt dann die 20
+größten Kampagnen aus, mit Präfix, `p3`, Art, Sitzungen je Variante,
+Quellen, ASNs, typischem Abstand, Länge der Befehlsfolge, Label und den
+ersten drei normalisierten Befehlen:
+
+```bash
+cd <PFAD> && sudo docker compose -f docker-compose.server.yml exec worker python -m worker.main run campaigns --bericht
+```
+
+Wie beim ATT&CK-Report: nur Terminal, nicht Log; Angreifertext, entschärft,
+auf 200 Zeichen gekürzt, Steuerzeichen sichtbar. Nicht ungeprüft an einen
+Coding-Agenten geben.
 
 ## Hinweise
 

@@ -1,0 +1,23 @@
+# Labels für Kampagnen (Schritt 6.2, E-039).
+#
+# Der Worker-Job campaigns (app/campaigns.py, worker/jobs.py) bündelt
+# Sitzungen mit gleicher normalisierter Befehlsfolge zu Kampagnen und
+# übernimmt label und description von hier. In der Datenbank kommen beide
+# nur aus dieser Datei, nie von Hand per SQL: Der nächste Lauf überschreibt
+# sie sonst wieder. /stats/campaigns zeigt nur Kampagnen mit Label.
+#
+# Format, je Kampagne ein Eintrag:
+#
+#   campaigns:
+#     - prefix: "0123456789ab"   # die ersten 12 Zeichen des Fingerprints, klein
+#       label: "Kurzer Name"     # höchstens 64 Zeichen, eindeutig
+#       description: >-          # höchstens 1000 Zeichen
+#         Was die Kampagne tut, in ein, zwei Sätzen.
+#
+# Präfix und Label müssen eindeutig sein; das Frontend nutzt das Label als
+# Schlüssel. Label und Beschreibung sind öffentlich: keine Adressen, keine
+# Befehle im Klartext, keine echten Firmen-, Personen- oder Markennamen.
+# Den Präfix liefert "python -m worker.main run campaigns --bericht",
+# Ablauf in docs/campaigns.md.
+
+campaigns: []

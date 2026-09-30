@@ -75,7 +75,12 @@ class Campaign(Base):
     countries: Mapped[dict[str, Any]] = mapped_column(server_default=text("'{}'::jsonb"))
     # ["T1105", "T1496"]
     techniques: Mapped[list[Any]] = mapped_column(server_default=text("'[]'::jsonb"))
-    # Kurzbeschreibung von Hand, siehe docs/campaigns.md
+    # Verschiedene ip_hash und ASNs, nur als Anzahl (Migration 0002).
+    sources: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    asns: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    # Median der Abstände zwischen aufeinanderfolgenden Sitzungsstarts.
+    median_interval_s: Mapped[int | None] = mapped_column(Integer)
+    # Nur aus rules/campaigns.yml, nie von Hand per SQL (docs/campaigns.md).
     label: Mapped[str | None] = mapped_column(String(64))
     description: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(

@@ -9,6 +9,9 @@
 - ``attack``: ordnet alle gespeicherten Befehle neu den ATT&CK-Techniken zu
   (Schritt 6.1). Nur von Hand, nach einer Änderung an ``rules/attack.yml``;
   neue Befehle taggt schon der Ingest.
+- ``campaigns``: bündelt Sitzungen mit gleicher normalisierter Befehlsfolge
+  zu Kampagnen und übernimmt die Labels aus ``rules/campaigns.yml``
+  (Schritt 6.2, E-039). Stündlich, voller Neuaufbau.
 
 Einen Job zur Rotation des HMAC-Schlüssels gibt es bewusst nicht. Der Bauplan
 sah ihn vor, E-022 hat entschieden, dass der Schlüssel fest bleibt.
@@ -23,8 +26,10 @@ import asyncio
 import http.client
 import json
 import os
+import statistics
 import urllib.error
 import urllib.request
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -37,6 +42,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.attack import default_rules
+from app.campaigns import (
+    LABELS_PATH,
+    MIN_SESSIONS,
+    PREFIX_LENGTH,
+    fingerprint,
+    load_labels,
+    normalized_sequence,
+    opening_hash,
+)
 from app.config import Settings
 
 # --- IPinfo ------------------------------------------------------------------
@@ -439,3 +453,326 @@ async def untagged_report(ctx: Context, limit: int = UNTAGGED_LIMIT) -> dict[str
         "ohne_technik": int(untagged),
         "haeufigste": [(command, int(count)) for command, count in rows],
     }
+
+
+# --- Kampagnen (Schritt 6.2) ----------------------------------------------------
+
+CAMPAIGN_BATCH = 2000
+CAMPAIGN_REPORT_LIMIT = 20
+REPORT_COMMANDS = 3
+# Wartet der Job länger auf eine Sperre, bricht er ab, statt den Ingest
+# aufzuhalten. Der nächste Lauf versucht es neu.
+LOCK_TIMEOUT = "5s"
+
+# Felder, die der Job schreibt. label und description kommen nur aus
+# rules/campaigns.yml.
+CAMPAIGN_FIELDS = (
+    "kind",
+    "first_seen",
+    "last_seen",
+    "sessions_a",
+    "sessions_b",
+    "countries",
+    "techniques",
+    "sources",
+    "asns",
+    "median_interval_s",
+    "label",
+    "description",
+)
+
+SESSION_IDS_SQL = text(
+    """
+    SELECT DISTINCT session_id FROM commands
+    WHERE session_id > :after ORDER BY session_id LIMIT :batch
+    """
+)
+SESSIONS_SQL = text(
+    """
+    SELECT id, variant, interactive, started_at, country, asn, ip_hash, campaign_id
+    FROM sessions WHERE id = ANY(CAST(:ids AS bigint[]))
+    """
+)
+SESSION_COMMANDS_SQL = text(
+    """
+    SELECT session_id, command, techniques FROM commands
+    WHERE session_id = ANY(CAST(:ids AS bigint[]))
+    ORDER BY session_id, sequence
+    """
+)
+EXISTING_CAMPAIGNS_SQL = text(
+    "SELECT fingerprint, " + ", ".join(CAMPAIGN_FIELDS) + " FROM campaigns"
+)
+UPSERT_CAMPAIGN_SQL = text(
+    """
+    INSERT INTO campaigns (fingerprint, kind, first_seen, last_seen, sessions_a, sessions_b,
+                           countries, techniques, sources, asns, median_interval_s,
+                           label, description)
+    VALUES (:fingerprint, :kind, :first_seen, :last_seen, :sessions_a, :sessions_b,
+            CAST(:countries AS jsonb), CAST(:techniques AS jsonb), :sources, :asns,
+            :median_interval_s, :label, :description)
+    ON CONFLICT (fingerprint) DO UPDATE SET
+        kind = EXCLUDED.kind,
+        first_seen = EXCLUDED.first_seen,
+        last_seen = EXCLUDED.last_seen,
+        sessions_a = EXCLUDED.sessions_a,
+        sessions_b = EXCLUDED.sessions_b,
+        countries = EXCLUDED.countries,
+        techniques = EXCLUDED.techniques,
+        sources = EXCLUDED.sources,
+        asns = EXCLUDED.asns,
+        median_interval_s = EXCLUDED.median_interval_s,
+        label = EXCLUDED.label,
+        description = EXCLUDED.description,
+        updated_at = now()
+    """
+)
+DELETE_CAMPAIGNS_SQL = text(
+    "DELETE FROM campaigns WHERE fingerprint <> ALL(CAST(:fingerprints AS text[]))"
+)
+CAMPAIGN_IDS_SQL = text("SELECT fingerprint, id FROM campaigns")
+ASSIGN_SQL = text("UPDATE sessions SET campaign_id = :campaign_id WHERE id = :id")
+# Sitzungen ohne Befehle gehören zu keiner Kampagne. Das greift nur, wenn
+# jemand campaign_id von Hand gesetzt hat.
+UNASSIGN_WITHOUT_COMMANDS_SQL = text(
+    """
+    UPDATE sessions SET campaign_id = NULL
+    WHERE campaign_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.session_id = sessions.id)
+    """
+)
+
+
+@dataclass
+class _SessionFacts:
+    """Was der Job je Sitzung braucht. ip_hash nur zum Zählen, nie in einer Ausgabe."""
+
+    id: int
+    variant: str
+    started_at: datetime
+    country: str | None
+    asn: str | None
+    ip_hash: str
+    campaign_id: int | None
+    techniques: set[str]
+
+
+def _interval_median(starts: list[datetime]) -> int | None:
+    ordered = sorted(starts)
+    gaps = [(later - earlier).total_seconds() for earlier, later in zip(ordered, ordered[1:])]
+    return round(statistics.median(gaps)) if gaps else None
+
+
+def campaign_facts(kind: str, sessions: list[_SessionFacts]) -> dict[str, Any]:
+    """Die Kennzahlen einer Kampagne aus ihren Sitzungen."""
+    countries = Counter(s.country or "??" for s in sessions)
+    return {
+        "kind": kind,
+        "first_seen": min(s.started_at for s in sessions),
+        "last_seen": max(s.started_at for s in sessions),
+        "sessions_a": sum(1 for s in sessions if s.variant == "a"),
+        "sessions_b": sum(1 for s in sessions if s.variant == "b"),
+        "countries": dict(sorted(countries.items())),
+        "techniques": sorted(set().union(*(s.techniques for s in sessions))),
+        "sources": len({s.ip_hash for s in sessions}),
+        "asns": len({s.asn for s in sessions if s.asn}),
+        "median_interval_s": _interval_median([s.started_at for s in sessions]),
+    }
+
+
+async def _read_fingerprints(
+    engine: AsyncEngine,
+) -> tuple[dict[str, tuple[str, list[_SessionFacts]]], list[_SessionFacts]]:
+    """Liest alle Sitzungen mit Befehlen in Portionen und gruppiert sie."""
+    groups: dict[str, tuple[str, list[_SessionFacts]]] = {}
+    everyone: list[_SessionFacts] = []
+    after = 0
+    while True:
+        async with engine.connect() as connection:
+            ids = list(
+                (
+                    await connection.execute(
+                        SESSION_IDS_SQL, {"after": after, "batch": CAMPAIGN_BATCH}
+                    )
+                ).scalars()
+            )
+            if not ids:
+                break
+            sessions = (await connection.execute(SESSIONS_SQL, {"ids": ids})).all()
+            commands = (await connection.execute(SESSION_COMMANDS_SQL, {"ids": ids})).all()
+        after = ids[-1]
+
+        texts: dict[int, list[str]] = defaultdict(list)
+        techniques: dict[int, set[str]] = defaultdict(set)
+        for session_id, command, tags in commands:
+            texts[session_id].append(command)
+            techniques[session_id].update(tags or [])
+
+        for row in sessions:
+            facts = _SessionFacts(
+                id=row.id,
+                variant=row.variant,
+                started_at=row.started_at,
+                country=row.country,
+                asn=row.asn,
+                ip_hash=row.ip_hash,
+                campaign_id=row.campaign_id,
+                techniques=techniques[row.id],
+            )
+            everyone.append(facts)
+            kind = "interactive" if row.interactive else "exec"
+            key = fingerprint(kind, normalized_sequence(texts[row.id]))
+            if key is not None:
+                groups.setdefault(key, (kind, []))[1].append(facts)
+    return groups, everyone
+
+
+async def build_campaigns(ctx: Context, labels_path: Path = LABELS_PATH) -> dict[str, Any]:
+    """Baut alle Kampagnen neu auf. Beliebig oft wiederholbar (E-039).
+
+    Liest alle Sitzungen mit Befehlen, bildet je Sitzung den Fingerprint und
+    macht aus jeder Gruppe mit mindestens ``MIN_SESSIONS`` Sitzungen eine
+    Kampagne. Geschrieben wird nur, was sich geändert hat, und alles in einer
+    Transaktion: Die API sieht entweder den alten oder den neuen Stand.
+    """
+    engine = _require_engine(ctx)
+    # Zuerst, damit eine kaputte Label-Datei nichts halb schreibt.
+    labels = load_labels(labels_path)
+
+    groups, everyone = await _read_fingerprints(engine)
+    wanted: dict[str, dict[str, Any]] = {}
+    members: dict[str, list[_SessionFacts]] = {}
+    for key, (kind, sessions) in groups.items():
+        if len(sessions) < MIN_SESSIONS:
+            continue
+        label = labels.get(key[:PREFIX_LENGTH])
+        wanted[key] = {
+            **campaign_facts(kind, sessions),
+            "label": label.label if label else None,
+            "description": label.description if label else None,
+        }
+        members[key] = sessions
+
+    async with engine.begin() as connection:
+        await connection.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
+        existing = {
+            row.fingerprint: {name: getattr(row, name) for name in CAMPAIGN_FIELDS}
+            for row in (await connection.execute(EXISTING_CAMPAIGNS_SQL)).all()
+        }
+        changed = [
+            {
+                "fingerprint": key,
+                **facts,
+                "countries": json.dumps(facts["countries"]),
+                "techniques": json.dumps(facts["techniques"]),
+            }
+            for key, facts in sorted(wanted.items())
+            if existing.get(key) != facts
+        ]
+        if changed:
+            await connection.execute(UPSERT_CAMPAIGN_SQL, changed)
+        removed = await connection.execute(DELETE_CAMPAIGNS_SQL, {"fingerprints": sorted(wanted)})
+
+        ids = {
+            key: campaign_id
+            for key, campaign_id in (await connection.execute(CAMPAIGN_IDS_SQL)).all()
+        }
+        target = {s.id: ids[key] for key, sessions in members.items() for s in sessions}
+        # Nach id sortiert, damit Sperren immer in derselben Reihenfolge fallen.
+        moves = [
+            {"id": s.id, "campaign_id": target.get(s.id)}
+            for s in sorted(everyone, key=lambda s: s.id)
+            if s.campaign_id != target.get(s.id)
+        ]
+        if moves:
+            await connection.execute(ASSIGN_SQL, moves)
+        stray = await connection.execute(UNASSIGN_WITHOUT_COMMANDS_SQL)
+
+    new = sum(1 for key in wanted if key not in existing)
+    return {
+        "sitzungen": len(everyone),
+        "fingerprints": len(groups),
+        "kampagnen": len(wanted),
+        "neu": new,
+        "geaendert": len(changed) - new,
+        "entfernt": removed.rowcount or 0,
+        "zugeordnet": len(target),
+        "sitzungen_geaendert": len(moves) + (stray.rowcount or 0),
+        "gelabelt": sum(1 for facts in wanted.values() if facts["label"]),
+        # Präfixe sind Hashes, kein Angreifertext, und dürfen ins Log.
+        "labels_ohne_kampagne": sorted(
+            prefix for prefix in labels if not any(key.startswith(prefix) for key in wanted)
+        ),
+    }
+
+
+REPORT_CAMPAIGNS_SQL = text(
+    """
+    SELECT id, fingerprint, label, kind, sessions_a, sessions_b, sources, asns,
+           median_interval_s
+    FROM campaigns
+    ORDER BY sessions_a + sessions_b DESC, id
+    LIMIT :limit
+    """
+)
+REPORT_TOTALS_SQL = text("SELECT count(*), count(label) FROM campaigns")
+# Die älteste Sitzung jeder Kampagne steht für ihre Befehlsfolge.
+REPORT_SAMPLES_SQL = text(
+    """
+    SELECT DISTINCT ON (campaign_id) campaign_id, id
+    FROM sessions
+    WHERE campaign_id = ANY(CAST(:ids AS integer[]))
+    ORDER BY campaign_id, started_at, id
+    """
+)
+REPORT_COMMANDS_SQL = text(
+    """
+    SELECT session_id, command FROM commands
+    WHERE session_id = ANY(CAST(:ids AS bigint[]))
+    ORDER BY session_id, sequence
+    """
+)
+
+
+async def campaigns_report(ctx: Context, limit: int = CAMPAIGN_REPORT_LIMIT) -> dict[str, Any]:
+    """Die größten Kampagnen mit ihren ersten Befehlen, für den Bericht.
+
+    Die Befehle sind Angreifertext, wenn auch normalisiert. Sie gehen nie ins
+    Log, sondern nur an ``worker.main``, das sie für das Terminal aufbereitet.
+    """
+    engine = _require_engine(ctx)
+    async with engine.connect() as connection:
+        total, labelled = (await connection.execute(REPORT_TOTALS_SQL)).one()
+        rows = (await connection.execute(REPORT_CAMPAIGNS_SQL, {"limit": limit})).all()
+        samples = dict(
+            (
+                await connection.execute(REPORT_SAMPLES_SQL, {"ids": [row.id for row in rows]})
+            ).all()
+        )
+        commands = (
+            await connection.execute(REPORT_COMMANDS_SQL, {"ids": list(samples.values())})
+        ).all()
+
+    texts: dict[int, list[str]] = defaultdict(list)
+    for session_id, command in commands:
+        texts[session_id].append(command)
+
+    campaigns = []
+    for row in rows:
+        sequence = normalized_sequence(texts[samples[row.id]]) if row.id in samples else []
+        campaigns.append(
+            {
+                "prefix": row.fingerprint[:PREFIX_LENGTH],
+                "p3": opening_hash(sequence, REPORT_COMMANDS),
+                "label": row.label,
+                "kind": row.kind,
+                "sessions_a": row.sessions_a,
+                "sessions_b": row.sessions_b,
+                "sources": row.sources,
+                "asns": row.asns,
+                "median_interval_s": row.median_interval_s,
+                "length": len(sequence),
+                "commands": sequence[:REPORT_COMMANDS],
+            }
+        )
+    return {"kampagnen": int(total), "gelabelt": int(labelled), "groesste": campaigns}

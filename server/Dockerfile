@@ -25,7 +25,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY alembic.ini ./
 COPY app ./app
 COPY worker ./worker
-# ATT&CK-Regeln, geladen von app/attack.py (Schritt 6.1).
+# ATT&CK-Regeln (app/attack.py, Schritt 6.1) und Labels der Kampagnen
+# (app/campaigns.py, Schritt 6.2).
 COPY rules ./rules
 
 # Build-Ziel für Tests: docker build --target test -t honeypot-lab-api:test server/
