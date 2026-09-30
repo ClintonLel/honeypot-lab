@@ -20,4 +20,47 @@
 # Den Präfix liefert "python -m worker.main run campaigns --bericht",
 # Ablauf in docs/campaigns.md.
 
-campaigns: []
+campaigns:
+  - prefix: "611080a1c75e"
+    label: "System-Abfrage (ausführlich)"
+    description: >-
+      Fragt mit einem Befehl detaillierte Systeminformationen (Kernel,
+      Hostname, Architektur) ab. Fällt durch eine extrem hohe Anzahl an
+      Sitzungen von wenigen Quellen auf.
+  - prefix: "37fa39ae478f"
+    label: "SSH-Key-Persistenz, breit verteilt"
+    description: >-
+      Legt einen SSH-Schlüssel ab und entzieht Schreibrechte auf das
+      Verzeichnis, um die eigene Persistenz abzusichern. Wird von vielen
+      unterschiedlichen Quellen genutzt und ähnelt dem Verhalten bekannter
+      Botnets.
+  - prefix: "8c3baa7a58ac"
+    label: "SSH-Key-Persistenz mit Systemanalyse"
+    description: >-
+      Teilt sich die Startbefehle mit der breit verteilten Kampagne zur SSH-
+      Persistenz, führt danach aber noch weitere Befehle aus, um unter anderem
+      CPU-Details zu ermitteln (oft eine Vorbereitung für Krypto-Mining).
+  - prefix: "7b935cc643ca"
+    label: "System-Abfrage mit manipuliertem PATH"
+    description: >-
+      Setzt gezielt die PATH-Variable der Shell neu und versucht über
+      verschiedene direkte Pfade verlässlich die Architektur des Systems zu
+      bestimmen.
+  - prefix: "72091e609000"
+    label: "System-Abfrage (absoluter Pfad)"
+    description: >-
+      Nutzt den absoluten Pfad zum Binärprogramm für die Abfrage von
+      Systeminformationen. Dies dient oft dazu, einfache Verschleierungen
+      durch Aliase auf dem Zielsystem zu umgehen.
+  - prefix: "02db2dbb7023"
+    label: "Dropper-Routine (Setup & Clean)"
+    description: >-
+      Führt Skripte aus, um das System zu bereinigen und für weitere Aktionen
+      vorzubereiten. Legt am Ende einen SSH-Schlüssel ab. Dieses Vorgehen
+      ähnelt bekannten Dropper-Familien wie Outlaw.
+  - prefix: "11719f310a95"
+    label: "System-Abfrage mit Echo-Marker"
+    description: >-
+      Fragt das System ab und gibt direkt danach eine festgelegte Zeichenfolge
+      per Echo aus. Ein solches Vorgehen dient Automatismen meist dazu zu
+      prüfen, ob die Kommandozeile reagiert.
