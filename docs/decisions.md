@@ -1998,7 +1998,10 @@ Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
 - Datum: 2026-10-01
 - Quelle: Schritt 7.2, Plan von Claude Code, vom User mit Änderungen
   freigegeben. Grundlage: Quellcode von Cowrie 3.0.14
-  (`cowrie/llm/llm.py`, `cowrie/llm/protocol.py`).
+  (`cowrie/llm/llm.py`, `cowrie/llm/protocol.py`). Nachgebessert nach dem
+  Review von #13 (Antigravity, Gegenprüfung Claude): Kosten bei Abbrüchen,
+  Zeichenmengen der Herkunftsprüfung, 503 statt 429 beim Budgetstopp,
+  Status `upstream_limited`.
 
 **Entscheidung:**
 
@@ -2006,9 +2009,12 @@ Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
   über Basis-URL, Modell und Preise austauschbar. Reihenfolge: Token
   konfiguriert (sonst 503), Token gültig (sonst 401, keine Zeile), Schalter
   und Konfiguration (sonst 503, Status `disabled`), Anfrage (400 oder 413,
-  `rejected`), Budget (429 `budget_exceeded`), Minutengrenze (429
-  `rate_limited`), Anbieter (504 `timeout`, 502 `upstream_error`, 200 `ok`).
-  Fehler im OpenAI-Format mit neutralem Text, nie mit Details vom Anbieter.
+  `rejected`), Budget (503 `budget_exceeded`), Minutengrenze (429
+  `rate_limited`), Anbieter (504 `timeout`; 502 `upstream_limited` bei einem
+  429 des Anbieters, 502 `upstream_error` bei jedem anderen Fehler; 200
+  `ok`). 429 entsteht nur an der Minutengrenze. Fehler im OpenAI-Format mit
+  neutralem Text, nie mit Details vom Anbieter; `upstream_limited` und
+  `upstream_error` haben für den Sensor denselben Rumpf.
 - **Die Anfrage gilt als feindlich.** Erlaubt sind nur die Felder, die Cowrie
   schickt (`model`, `messages`, `max_tokens`, `temperature`); die drei Werte
   außer `messages` werden ignoriert, alles andere abgelehnt. `content` muss
@@ -2027,7 +2033,18 @@ Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
   dann Cowries Satz gegen Prompt-Injection, dann der Satz mit Hostname,
   Benutzer und Verzeichnis, bei Exec zuletzt der Befehl. Getrennt wird am
   ersten Vorkommen des Satzes; der Befehl ist Angreifertext und darf den Satz
-  oder das Hostname-Muster selbst enthalten. Der SHA-256 des Teils davor
+  oder das Hostname-Muster selbst enthalten. Hostname, Benutzer und
+  Verzeichnis sind auf feste ASCII-Zeichenmengen beschränkt, ohne
+  Anführungszeichen und Leerzeichen:
+
+  | Feld | Erlaubt | Was Cowrie 3.0.14 dort einsetzt |
+  |------|---------|---------------------------------|
+  | Hostname | 1 bis 64 Zeichen aus `A-Z a-z 0-9 . -` | `hostname` aus `cowrie.cfg` (`bld-ci-03`) |
+  | Benutzer | 1 bis 32 Zeichen aus `A-Z a-z 0-9 . _ -` | den Login-Namen; laut `sensor/cowrie/userdb.txt` nur `root` oder `admin`, Cowrie vergleicht exakt |
+  | Verzeichnis | beginnt mit `/`, 1 bis 1.024 Zeichen aus `A-Z a-z 0-9 . _ - /` | `/`; `self.cwd` ändert sich im LLM-Backend nie |
+
+  Feste Mengen statt `str.isalnum()`, das auch Unicode-Buchstaben
+  durchlässt. Der SHA-256 des Teils davor
   (`prompt_sha256`) steht in jeder Logzeile und lässt sich in
   `LLM_PROMPT_SHA256` pinnen. Zerlegt wird mit `str.find`, nicht mit einem
   regulären Ausdruck.
@@ -2043,10 +2060,16 @@ Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
   die Anfrage begann.
 - **Minutengrenze** als gleitendes 60-Sekunden-Fenster über alle Aufrufe.
 - **Kosten** in Mikro-Euro mit eigenem Preis für zwischengespeicherte Tokens,
-  aufgerundet. Bei Zeitüberschreitung und fehlendem `usage` eine obere
-  Schätzung (Zeichen / 3 als Eingabe ohne Cache, volle Ausgabe).
-- **Neue Spalte** `llm_usage.cached_tokens` (Migration 0003), neuer Status
-  `disabled`. `session_id` bleibt leer (E-041).
+  aufgerundet. Ohne `usage` und bei jedem Abbruch nach dem
+  Verbindungsaufbau eine obere Schätzung (Zeichen / 3 als Eingabe ohne
+  Cache, volle Ausgabe): Zeitüberschreitung, Lese- und Schreibfehler,
+  abgebrochene Verbindung (`RemoteProtocolError`), kaputte Kodierung, zu
+  große Antwort, `OSError`. 0, wenn keine Verbindung zustande kam
+  (`ConnectError`, `ConnectTimeout`, `PoolTimeout`), und bei einer
+  Fehlerantwort des Anbieters (Status außer 200, auch 429).
+- **Neue Spalte** `llm_usage.cached_tokens` (Migration 0003), neue Status
+  `disabled` und `upstream_limited` (429 des Anbieters, etwa sein hartes
+  Monatslimit). `session_id` bleibt leer (E-041).
 - **Konfiguration** nur über die `.env`. Kein Wert des Gateways verhindert den
   Start der API; Platzhalter und zu kurze Secrets gelten als fehlend
   (Maßstab wie E-023). Ein Schalter `LLM_GATEWAY_ENABLED`, Vorgabe aus.
@@ -2074,8 +2097,20 @@ Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
   lässt in keinen 60 Sekunden mehr als die Grenze durch, und daraus folgt die
   Schranke für gleichzeitige Anfragen.
 - Ein Anbieter rechnet auch Antworten ab, auf die das Gateway nicht mehr
-  wartet. Ohne Schätzung könnte ein langsamer Anbieter das Budget unbemerkt
-  leeren.
+  wartet oder deren Verbindung nach dem Senden abbricht. Ohne Schätzung
+  könnte ein langsamer oder wackliger Anbieter das Budget unbemerkt leeren.
+  Kam dagegen gar keine Verbindung zustande, rechnet niemand ab; eine
+  Schätzung dort würde bei einem Ausfall des Anbieters das Tagesbudget
+  leeren und B für den Rest des Tages stumm machen.
+- **Budgetstopp 503 statt 429:** `method.md` behandelt beides verschieden.
+  Ein Budgetstopp ist ein Ausfall (Abschnitt 8, Punkt 2), die Minutengrenze
+  gehört zur Behandlung („Nicht ausgeschlossen“ in Abschnitt 8). Der Sensor
+  sieht nur `http_status`, deshalb hat jede Seite ihren eigenen Code (V3).
+  Ein 429 des Anbieters wird aus demselben Grund nicht weitergereicht.
+- `upstream_limited` als eigener Status: Greift das harte Limit bei OpenAI,
+  ist das in `llm_usage` sofort von anderen Fehlern zu unterscheiden.
+- Zeichenmengen für Hostname, Benutzer und Verzeichnis: Nur so stimmt die
+  Zusage, dass der Befehl der einzige freie Text im System-Prompt ist.
 - `disabled` statt keiner Zeile: Jede Anfrage mit gültigem Token soll in
   `llm_usage` stehen, auch wenn das Gateway aus ist.
 - Felder wie `stream` oder `tools` ablehnen statt ignorieren: Cowrie schickt
@@ -2096,7 +2131,11 @@ Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
 - Lasttest (`tests/test_llm_load.py`): Bei einem Budget für 10 Aufrufe
   gingen mit 8 parallelen Schleifen 16 Aufrufe durch, mit 24 gleichzeitig
   gestarteten Anfragen 24. Beides liegt innerhalb der Schranke „laufende
-  Anfragen“. Danach gab es nur noch 429 ohne Aufruf beim Anbieter.
+  Anfragen“. Danach gab es nur noch 503 ohne Aufruf beim Anbieter, auch für
+  einen neuen Prozess, der das Budget aus `llm_usage` liest.
+- Lässt `userdb.txt` je beliebige Benutzernamen zu (`*` oder ein regulärer
+  Ausdruck als Benutzer), muss die Prüfung des Benutzernamens mitwachsen.
+  Sonst bekommt B für solche Logins keine Antwort, A schon.
 - Für 7.3: Der Hash hängt an den eigenen Adressen des Sensors (`{ip}`,
   `{ip6}` im Prompt) und setzt voraus, dass `system_prompt` und
   `system_prompt_exec` denselben Prompt bekommen. Der Patch aus E-041 darf

@@ -445,15 +445,24 @@ der Prüfung: E-043.
 | 200 | Antwort des Modells | `ok` |
 | 400, 413 | Anfrage ungültig oder zu groß, auch: nicht in Cowries Form, falscher Prompt-Hash | `rejected` |
 | 401 | Token fehlt oder falsch | keine Zeile |
-| 429 `budget_exceeded` | Monats- oder Tagesbudget erreicht, Anbieter nicht gerufen | `budget_exceeded` |
 | 429 `rate_limited` | `LLM_CALLS_PER_MINUTE` erreicht, Anbieter nicht gerufen | `rate_limited` |
-| 502 | Fehler beim Anbieter, auch dessen eigenes 429 | `upstream_error` |
-| 503 | abgeschaltet oder unvollständig konfiguriert | `disabled`; ohne brauchbares `LLM_GATEWAY_TOKEN` keine Zeile |
+| 502 | 429 des Anbieters, etwa sein hartes Monatslimit | `upstream_limited` |
+| 502 | jeder andere Fehler beim Anbieter | `upstream_error` |
+| 503 `budget_exceeded` | Monats- oder Tagesbudget erreicht, Anbieter nicht gerufen | `budget_exceeded` |
+| 503 `unavailable` | abgeschaltet oder unvollständig konfiguriert | `disabled`; ohne brauchbares `LLM_GATEWAY_TOKEN` keine Zeile |
 | 504 | Zeitlimit beim Anbieter | `timeout` |
 
-429 kommt nur von den Grenzen des Gateways, so trennt der Sensor sie von
-anderen Fehlern (`method.md`, V3). Bei `timeout` und fehlendem `usage` ist
-`cost_micros` eine obere Schätzung, denn der Anbieter rechnet trotzdem ab.
+429 kommt nur von der Minutengrenze des Gateways, nie vom Budget und nie vom
+Anbieter. Die Minutengrenze gehört zur Behandlung, ein Budgetstopp ist ein
+Ausfall (`method.md` 8, V3); auf dem Sensor trennt beides nur `http_status`.
+Für den Sensor sehen `upstream_limited` und `upstream_error` gleich aus.
+
+`cost_micros` ist eine obere Schätzung ohne `usage` und bei jedem Abbruch,
+nachdem die Verbindung stand (Zeitüberschreitung, Lese- oder Schreibfehler,
+abgebrochene Verbindung, zu große Antwort): Der Anbieter kann trotzdem
+abrechnen. 0 steht dort, wenn keine Verbindung zustande kam, und bei einer
+Fehlerantwort des Anbieters. So leert ein Ausfall des Anbieters nicht das
+Budget.
 
 Jede Anfrage schreibt eine Logzeile `llm` mit Status, Tokens, Kosten, Latenz
 und `prompt_sha256`, dem Hash des Persona-Teils im System-Prompt. Prompt und
@@ -543,7 +552,7 @@ auch einen Fehler im Gateway ab.
    setzen, umgerechnet in Dollar, damit das Gateway zuerst greift. Laut OpenAI
    wirkt die Sperre nicht sofort und kann leicht überschritten werden; danach
    antwortet OpenAI mit 429 `project_spend_limit_exceeded`, das Gateway gibt
-   das als 502 weiter.
+   das als 502 weiter und schreibt `upstream_limited` in `llm_usage`.
 5. **Prepaid ohne automatisches Aufladen:** Guthaben im Voraus kaufen und
    „Auto recharge“ aus lassen. Ein leeres Guthaben ist die letzte Grenze
    (`credit_balance_exhausted`).
@@ -556,8 +565,8 @@ Prüfen:
 - Der Key steht auf „Restricted“.
 - Optionale Gegenprobe nach dem ersten Probeaufruf (unten): das Projektlimit
   kurz auf 0,01 $ setzen, einige Minuten warten, Probeaufruf wiederholen.
-  Erwartet: HTTP 502, im Log `upstream_status: 429`. Danach das Limit
-  zurücksetzen.
+  Erwartet: HTTP 502, im Log `upstream_status: 429` und in `llm_usage` der
+  Status `upstream_limited`. Danach das Limit zurücksetzen.
 - Monatlich die Ausgaben bei OpenAI mit `llm_usage` vergleichen:
 
 ```bash
@@ -712,8 +721,10 @@ cowrie-b. Auch das ist eine brauchbare Prüfung nach dem Pinnen.
   Hostname, Benutzer und Verzeichnis, Befehl am Ende). Sonst schlägt die
   Herkunftsprüfung an (400, `"grund": "herkunft"`). `tests/cowrie_llm.py`
   bildet Cowrie 3.0.14 nach.
-- **`http_status` in `cowrie.llm.response`:** 429 heißt nur „Grenze des
-  Gateways“. 502 ist der Anbieter, 503 ein abgeschaltetes Gateway, 504 das
+- **`http_status` in `cowrie.llm.response`:** 429 heißt nur Minutengrenze
+  des Gateways, sie gehört zur Behandlung. 503 heißt Gateway aus oder Budget
+  erschöpft, beides ist ein Ausfall (`method.md` 8). 502 ist der Anbieter
+  (in `llm_usage` `upstream_error` oder `upstream_limited`), 504 das
   Zeitlimit.
 
 ## Hinweise

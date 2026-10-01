@@ -176,7 +176,7 @@ B startet erst, wenn alle Pflichtpunkte erfüllt sind.
 |-----|-----|-------|---------|---------|
 | V1 | B loggt Exec-Befehle als `cowrie.command.input`, auch wenn die Begrenzung je Adresse greift (Patch, E-041) | Cowries LLM-Backend loggt Befehle nur in interaktiven Sitzungen. Ohne V1 hätten fast alle B-Sitzungen keine Befehle | auf dem Sensor `ssh -p 2322 root@localhost 'uname -a'`: Sitzung mit `variant = 'b'`, `interactive = false` und einem Befehl | ja |
 | V2 | Zu jedem Befehl in B genau ein Ereignis `cowrie.llm.response` mit `status` (`ok`, `empty`, `error`, `rate_limited`, `client_gone`), `latency_ms`, `http_status` und `command_index`, der laufenden Nummer des Befehls in seiner Sitzung (ab 1, in der Reihenfolge der `cowrie.command.input`). `client_gone` gilt, wenn der Client bei Eintreffen der Antwort schon weg ist. Der Ingest nimmt das Ereignis an und legt die Felder zusätzlich in einer abgeleiteten Tabelle ab | H3, Ausfallzeiten und K1 bis K3 brauchen es. Antworten können in anderer Reihenfolge eintreffen als die Befehle, etwa bei parallelen Exec-Kanälen; nur `command_index` ordnet sie sicher zu. Roh-Events werden nach 90 Tagen gelöscht | ein Testaufruf liefert `ok` mit Antwortzeit, bei gestopptem Gateway `error`; zwei parallele Exec-Kanäle bekommen die richtige Nummer | ja |
-| V3 | Das Gateway beantwortet Budget- und Limit-Stopps mit eigenem HTTP-Status (Vorschlag: 429) | nur so sind sie auf dem Sensor von anderen Fehlern zu trennen | Lasttest aus 7.2: `http_status` 429 im Ereignis | ja |
+| V3 | Das Gateway antwortet auf die Minutengrenze mit HTTP 429 und auf einen Budgetstopp mit 503 (E-043). Sonst entsteht kein 429, auch nicht aus einem 429 des Anbieters | Die Minutengrenze gehört zur Behandlung, ein Budgetstopp ist ein Ausfall (Abschnitt 8). Auf dem Sensor trennt sie nur `http_status` | Tests und Lasttest aus 7.2; in 7.3 je ein Ereignis mit `http_status` 429 und 503 | ja |
 | V4 | Nach dem Login zeigen A und B dieselbe motd (E-015, E-041) | sonst sieht jede interaktive Sitzung sofort einen Unterschied | Login auf 2222 und 2322 vom Sensor, Ausgabe vergleichen | ja |
 | V5 | B lädt Downloads mit `wget` und `curl` wirklich (E-041) | sonst sehen Angreifer an ihren eigenen Servern, dass B nie etwas abholt | Testdownload einer eigenen Datei, etwa von tomkaufmann.dev: `cowrie.session.file_download` in B | empfohlen, sonst Grenze 7 |
 | V6 | Vector liest die Logs von B (E-025), das Prüfskript für die Zuteilung aus 7.4 liegt bereit | ohne das gibt es keine Daten von B | Testsitzung auf 2322 kommt in der Datenbank an | ja |
@@ -364,17 +364,19 @@ Ausgeschlossen wird nur, was hier steht.
    - von keiner Variante ein Ereignis kommt (Sensor oder Pipeline aus),
    - eine Variante mindestens 20 Sitzungen hat und die andere keine (eine
      Variante aus), oder
-   - B mindestens 5 Aufrufe hat und mindestens die Hälfte davon `error`
-     (Gateway, Anbieter oder Budget).
+   - B mindestens 5 Aufrufe hat und mindestens die Hälfte davon `error` ist
+     und nicht `http_status` 429 hat (Gateway aus oder nicht erreichbar,
+     Budget erschöpft, Fehler beim Anbieter).
 
    Quellen, deren erster Befehl in einer Ausfallzeit liegt, fallen aus allen
    Größen je Quelle. Aufrufe in Ausfallzeiten fallen aus H3.
 3. **Quellen in beiden Varianten** (N4), falls es sie gibt.
 
 **Nicht ausgeschlossen** werden Befehle, auf die B wegen der Begrenzung je
-Adresse oder eines Limits im Gateway nicht geantwortet hat (`rate_limited`,
-429). Sie gehören zur Behandlung, wie sie läuft. Wie stark das Ergebnis davon
-abhängt, zeigen R5 und K3.
+Adresse (`rate_limited`) oder der Minutengrenze des Gateways (`http_status`
+429) nicht geantwortet hat. Sie gehören zur Behandlung, wie sie läuft. Wie
+stark das Ergebnis davon abhängt, zeigen R5 und K3. Ein Budgetstopp (503)
+gehört nicht dazu, er zählt als Ausfall (Punkt 2).
 
 Der Bericht nennt je Grund und Variante, wie viele Quellen, Sitzungen und
 Aufrufe herausfallen.
