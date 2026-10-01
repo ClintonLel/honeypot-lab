@@ -172,12 +172,12 @@ B startet erst, wenn alle Pflichtpunkte erfüllt sind.
 | Nr. | Was | Warum | Prüfung | Pflicht |
 |-----|-----|-------|---------|---------|
 | V1 | B loggt Exec-Befehle als `cowrie.command.input`, auch wenn die Begrenzung je Adresse greift (Patch, E-041) | Cowries LLM-Backend loggt Befehle nur in interaktiven Sitzungen. Ohne V1 hätten fast alle B-Sitzungen keine Befehle | auf dem Sensor `ssh -p 2322 root@localhost 'uname -a'`: Sitzung mit `variant = 'b'`, `interactive = false` und einem Befehl | ja |
-| V2 | Zu jedem Befehl in B genau ein Ereignis `cowrie.llm.response` mit `status` (`ok`, `empty`, `error`, `rate_limited`, `client_gone`), `latency_ms` und `http_status`. `client_gone` gilt, wenn der Client bei Eintreffen der Antwort schon weg ist. Der Ingest nimmt das Ereignis an und legt Status und Antwortzeit zusätzlich in einer abgeleiteten Tabelle ab | H3, Ausfallzeiten und K1 bis K3 brauchen es. Roh-Events werden nach 90 Tagen gelöscht | ein Testaufruf liefert `ok` mit Antwortzeit, bei gestopptem Gateway `error` | ja |
+| V2 | Zu jedem Befehl in B genau ein Ereignis `cowrie.llm.response` mit `status` (`ok`, `empty`, `error`, `rate_limited`, `client_gone`), `latency_ms`, `http_status` und `command_index`, der laufenden Nummer des Befehls in seiner Sitzung (ab 1, in der Reihenfolge der `cowrie.command.input`). `client_gone` gilt, wenn der Client bei Eintreffen der Antwort schon weg ist. Der Ingest nimmt das Ereignis an und legt die Felder zusätzlich in einer abgeleiteten Tabelle ab | H3, Ausfallzeiten und K1 bis K3 brauchen es. Antworten können in anderer Reihenfolge eintreffen als die Befehle, etwa bei parallelen Exec-Kanälen; nur `command_index` ordnet sie sicher zu. Roh-Events werden nach 90 Tagen gelöscht | ein Testaufruf liefert `ok` mit Antwortzeit, bei gestopptem Gateway `error`; zwei parallele Exec-Kanäle bekommen die richtige Nummer | ja |
 | V3 | Das Gateway beantwortet Budget- und Limit-Stopps mit eigenem HTTP-Status (Vorschlag: 429) | nur so sind sie auf dem Sensor von anderen Fehlern zu trennen | Lasttest aus 7.2: `http_status` 429 im Ereignis | ja |
 | V4 | Nach dem Login zeigen A und B dieselbe motd (E-015, E-041) | sonst sieht jede interaktive Sitzung sofort einen Unterschied | Login auf 2222 und 2322 vom Sensor, Ausgabe vergleichen | ja |
 | V5 | B lädt Downloads mit `wget` und `curl` wirklich (E-041) | sonst sehen Angreifer an ihren eigenen Servern, dass B nie etwas abholt | Testdownload einer eigenen Datei, etwa von tomkaufmann.dev: `cowrie.session.file_download` in B | empfohlen, sonst Grenze 7 |
 | V6 | Vector liest die Logs von B (E-025), das Prüfskript für die Zuteilung aus 7.4 liegt bereit | ohne das gibt es keine Daten von B | Testsitzung auf 2322 kommt in der Datenbank an | ja |
-| V7 | Regeln für Echtheitstests in `server/rules/echtheit.yml`, entwickelt nur auf Daten der Vorperiode, mit Tests | H4 braucht eine feste Definition | Tests mit erfundenen Beispielen | für H4 |
+| V7 | Regeln für Echtheitstests in `server/rules/echtheit.yml`, entwickelt nur auf Daten der Vorperiode, mit Tests. Die Auswertung wendet sie selbst an (Abschnitt 7.1), ein Feld in der Datenbank gibt es dafür nicht | H4 braucht eine feste Definition | Tests mit erfundenen Beispielen | für H4 |
 | V8 | Selbsttest-Kennung: `SELFTEST_PASSWORD` in der `.env` des Hauptservers, nur Buchstaben und Ziffern, mindestens 16 Zeichen. Jeder eigene Test von außen meldet sich damit an | eigene Sitzungen erkennen (Abschnitt 8) | – | ja |
 | V9 | Tag `vorab-b` gesetzt, Start-Eintrag mit den Werten aus Abschnitt 4.5 vorbereitet | Abschnitt 1 | – | ja |
 
@@ -267,8 +267,9 @@ Messgröße ist E1 (Abschnitt 7.5), nur mit den Regeln aus V7.
 | erster Befehl | erster Befehl einer Quelle ab T0 in dieser Reihenfolge, sein Zeitpunkt heißt t_q |
 | Exec-Quelle | Quelle, deren erster Befehl in einer Sitzung mit `interactive = false` liegt |
 | Werkzeug | Normalform des ersten Befehls einer Quelle |
-| Aufruf | ein Ereignis `cowrie.llm.response` in B. Der n-te Aufruf einer Sitzung gehört zu ihrem Befehl mit `sequence` = n |
+| Aufruf | ein Ereignis `cowrie.llm.response` in B. Es gehört zu der Zeile in `commands` seiner Sitzung, die nach `occurred_at` und `sequence` an Stelle `command_index` steht; leere Befehle zählen dabei mit |
 | Technik | Eintrag in `commands.techniques`, für die Auswertung neu berechnet mit `attack.yml` im Stand `vorab-b` |
+| Echtheitstest | Befehl, auf dessen gespeicherten, entschärften Text (`commands.command`) mindestens eine Regel aus `server/rules/echtheit.yml` im Stand `vorab-b` zutrifft. Die Auswertung wendet die Regeln selbst an. Ein Eintrag in `commands.techniques` entsteht nicht, das Feld bleibt ATT&CK vorbehalten |
 
 ### 7.2 Primärgröße M1
 
@@ -302,11 +303,12 @@ deshalb nur beschrieben.
 ### 7.4 Größen zu H3
 
 **Grundgesamtheit:** Aufrufe in B zu Befehlen aus Exec-Sitzungen, außerhalb
-von Ausfallzeiten, mit `status` `ok`, `empty` oder `client_gone`.
+von Ausfallzeiten, mit `status` `ok`, `empty` oder `client_gone` und
+`latency_ms` unter 60.000. Nach 60 Sekunden beendet Cowrie eine Exec-Sitzung
+selbst. Spätere Antworten zählen als Zeitüberschreitung, nicht als Abbruch,
+und werden getrennt berichtet.
 
-- **Abbruch:** `status = client_gone` und `latency_ms` unter 60.000. Nach
-  60 Sekunden beendet Cowrie eine Exec-Sitzung selbst. Das zählt als
-  Zeitüberschreitung, nicht als Abbruch, und wird getrennt berichtet.
+- **Abbruch:** `status = client_gone`.
 - **L1:** Für jede Normalform mit mindestens 20 Aufrufen werden die Aufrufe am
   Median ihrer Antwortzeit geteilt; Aufrufe genau auf dem Median zählen zur
   schnellen Hälfte. L1 ist die Abbruchquote der langsamen minus die der
@@ -322,7 +324,7 @@ von Ausfallzeiten, mit `status` `ok`, `empty` oder `client_gone`.
 | I1 | interaktive Sitzungen ab T0, nicht ausgeschlossen | Zahl der Befehle |
 | I2 | wie I1 | Dauer (`sessions.duration_ms`) |
 | I3 | wie I1 | Anteil der Sitzungen mit höchstens zwei Befehlen |
-| E1 | Quellen ab T0 mit mindestens einem Echtheitstest (Regeln aus V7); Zeitpunkt des ersten Tests t_e | Y = 1, wenn bis t_e + 1 h ein Befehl folgt, der kein Echtheitstest ist und dessen Normalform die Quelle vorher noch nicht geschickt hat |
+| E1 | Quellen ab T0 mit mindestens einem Echtheitstest (Abschnitt 7.1); Zeitpunkt des ersten Tests t_e | Y = 1, wenn bis t_e + 1 h ein Befehl folgt, der kein Echtheitstest ist und dessen Normalform die Quelle bis zu diesem Befehl noch nie geschickt hat |
 | E2 | wie M1 | Anteil der Quellen, deren Befehle bis t_q + 24 h einen Echtheitstest enthalten (beschreibend) |
 
 ### 7.6 Kontrollen
@@ -421,13 +423,15 @@ Bericht nach Nummer oder Kampagnen-Präfix, nie nach dem Befehlstext.
 
 Bevor jemand Ergebnisse von B ansieht, läuft das Auswertungsskript aus
 Schritt 7.5 auf der Vorperiode. Grundgesamtheit wie bei M1, aber mit Quellen,
-deren allererster Befehl in [2026-09-17, T0 − 24 h) liegt. Sie werden 200-mal
+deren allererster Befehl in [2026-09-17, T0 − 24 h) liegt. Sie werden 500-mal
 zufällig in zwei Hälften geteilt, M1 wird jeweils wie in der Hauptauswertung
 berechnet (je 2.000 Bootstrap-Wiederholungen). Erwartet: Die Differenzen
-liegen im Mittel bei 0, und das 95-%-Intervall enthält die 0 in mindestens
-90 % der Teilungen. Sonst ist das Skript oder die Methode fehlerhaft und wird
-korrigiert, bevor B ausgewertet wird. Das Ergebnis und die mittlere Breite der
-Intervalle kommen in `docs/decisions.md`.
+liegen im Mittel bei 0, und mindestens 465 der 500 Intervalle (93 %) enthalten
+die 0. Ein richtiges 95-%-Intervall besteht diese Prüfung mit rund 98 %
+Wahrscheinlichkeit, eines mit nur 90 % Überdeckung mit rund 1 %. Fällt sie
+durch, ist das Skript oder die Methode fehlerhaft und wird korrigiert, bevor B
+ausgewertet wird. Das Ergebnis und die mittlere Breite der Intervalle kommen
+in `docs/decisions.md`.
 
 ### 9.7 Zwischenstände und Abbruch
 

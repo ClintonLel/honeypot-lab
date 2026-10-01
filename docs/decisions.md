@@ -1912,8 +1912,11 @@ gepinnten Cowrie-Images von A, mit einem Patch am LLM-Backend:
    Begrenzung je Adresse.
 2. Jeder Befehl erzeugt genau ein Ereignis `cowrie.llm.response` mit `status`
    (`ok`, `empty`, `error`, `rate_limited`, `client_gone`), `latency_ms`,
-   `http_status` und der Länge der Ausgabe. Der Ingest nimmt es an und legt
-   Status und Antwortzeit zusätzlich in einer abgeleiteten Tabelle ab.
+   `http_status`, der Länge der Ausgabe und `command_index`, der laufenden
+   Nummer des Befehls in seiner Sitzung. Antworten können in anderer
+   Reihenfolge eintreffen als die Befehle, etwa bei parallelen Exec-Kanälen;
+   nur die Nummer ordnet sie sicher zu. Der Ingest nimmt das Ereignis an und
+   legt die Felder zusätzlich in einer abgeleiteten Tabelle ab.
 3. Nach dem Login gibt B die motd aus `etc/motd` aus (E-015).
 4. `wget` und `curl` laden über Cowries Download-Code wirklich herunter und
    schreiben dieselben Ereignisse wie A. Begründung, Grenzen und Ablauf wie in
