@@ -376,15 +376,17 @@ def test_a_foreign_persona_is_rejected_when_the_hash_is_pinned(llm, caplog):
     assert record.prompt_sha256 != PERSONA_HASH
 
 
-def test_without_a_pin_the_observed_hash_is_logged_once(llm, caplog):
+def test_every_call_logs_the_prompt_hash(llm, caplog):
+    """Exec und interaktiv zeigen denselben Hash; damit pinnt man ihn in 7.3."""
     client, make = llm
-    ready(make)
+    ready(make, llm_calls_per_minute=2)
     with caplog.at_level(logging.INFO, logger="lab.llm"):
         post(client, exec_request("id"))
         post(client, interactive_request(["User: id"]))
         post(client, exec_request("uname -a"))
-    hashes = [r.prompt_sha256 for r in caplog.records if r.getMessage() == "llm-prompt"]
-    assert hashes == [PERSONA_HASH]
+    records = [r for r in caplog.records if r.getMessage() == "llm"]
+    assert [r.status for r in records] == ["ok", "ok", "rate_limited"]
+    assert {r.prompt_sha256 for r in records} == {PERSONA_HASH}
 
 
 # --- 429: Budget und Minutengrenze ---------------------------------------------

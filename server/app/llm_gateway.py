@@ -347,7 +347,6 @@ class Gateway:
         self.ledger = ledger
         self._clock = clock
         self._monotonic = monotonic
-        self._last_prompt_hash: str | None = None
         self.budget = Budget(config.budget_month_micros, config.budget_day_micros) if config else None
         self.window = CallWindow(config.calls_per_minute) if config else None
         self._client: httpx2.AsyncClient | None = None
@@ -462,7 +461,10 @@ class Gateway:
                 extra=extra,
             )
             return error_response("too_large" if too_large else "invalid")
-        self._note_prompt(checked.persona_sha256, pinned=bool(config.prompt_sha256))
+        # Nur der Hash des Persona-Teils, nie Inhalt. Steht in jeder Logzeile:
+        # So zeigt sich, dass Exec und interaktiv denselben Prompt schicken, und
+        # in 7.3 lässt sich genau der Wert pinnen, der wirklich ankommt.
+        prompt = {"prompt_sha256": checked.persona_sha256}
 
         try:
             await budget.load(self.ledger.spent, started_at)
@@ -470,11 +472,15 @@ class Gateway:
             logger.error("llm-budget nicht lesbar", extra={"error": type(exc).__name__})
             return error_response("unavailable")
         if budget.exceeded(self._clock()):
-            await self._finish(UsageRecord(started_at, config.model, "budget_exceeded"), http=429)
+            await self._finish(
+                UsageRecord(started_at, config.model, "budget_exceeded"), http=429, extra=prompt
+            )
             return error_response("budget_exceeded")
         wait = window.acquire(self._monotonic())
         if wait > 0:
-            await self._finish(UsageRecord(started_at, config.model, "rate_limited"), http=429)
+            await self._finish(
+                UsageRecord(started_at, config.model, "rate_limited"), http=429, extra=prompt
+            )
             return error_response("rate_limited", headers={"Retry-After": str(max(1, round(wait)))})
 
         outcome = await self._forward(config, checked)
@@ -496,7 +502,11 @@ class Gateway:
         await self._finish(
             record,
             http=http,
-            extra={"upstream_status": outcome.upstream_status, "geschaetzt": outcome.estimated},
+            extra={
+                **prompt,
+                "upstream_status": outcome.upstream_status,
+                "geschaetzt": outcome.estimated,
+            },
         )
         if outcome.status == "ok":
             return JSONResponse(
@@ -565,17 +575,6 @@ class Gateway:
         return Outcome(
             "ok", latency, usage, cost, estimated, upstream_status, content, finish_reason
         )
-
-    def _note_prompt(self, digest: str, *, pinned: bool) -> None:
-        """Ohne gepinnten Hash: den beobachteten loggen, sobald er sich ändert.
-
-        Nur der Hash des Persona-Teils, nie Inhalt. So lässt sich in 7.3
-        genau das pinnen, was wirklich ankommt.
-        """
-        if pinned or digest == self._last_prompt_hash:
-            return
-        self._last_prompt_hash = digest
-        logger.info("llm-prompt", extra={"prompt_sha256": digest})
 
     async def _finish(
         self, record: UsageRecord, *, http: int, extra: dict[str, Any] | None = None
