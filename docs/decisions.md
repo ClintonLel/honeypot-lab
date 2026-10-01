@@ -1836,7 +1836,10 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
 
 - Status: angenommen
 - Datum: 2026-10-01
-- Quelle: Schritt 7.1, Entwurf von Claude (Projekt), Review durch Antigravity
+- Quelle: Schritt 7.1, Entwurf von Claude (Projekt), Review durch Antigravity.
+  Grenze ±5 Prozentpunkte, Schwelle von 1.000 Quellen, Laufzeit 42 plus
+  einmal 28 Tage und echte Downloads in B als Empfehlung (V5) vom User am
+  2026-10-01 bestätigt
 
 **Entscheidung:**
 
@@ -1921,6 +1924,9 @@ gepinnten Cowrie-Images von A, mit einem Patch am LLM-Backend:
 4. `wget` und `curl` laden über Cowries Download-Code wirklich herunter und
    schreiben dieselben Ereignisse wie A. Begründung, Grenzen und Ablauf wie in
    E-016.
+
+Punkte 1 bis 3 sind Pflicht vor dem Start von B. Punkt 4 ist empfohlen; fehlt
+er beim Start, gilt Grenze 7 in `method.md` (V5).
 
 Bewusst nicht im Patch: das Verzeichnis im Prompt, das Gedächtnis von zehn
 Befehlen, SFTP und Weiterleitungen. Sie gehören zur Behandlung „Cowries
