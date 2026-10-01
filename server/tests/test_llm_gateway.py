@@ -7,7 +7,6 @@ Ohne Datenbank und ohne echten Anbieter: Das Gateway bekommt eine Attrappe
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from datetime import timedelta
