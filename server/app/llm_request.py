@@ -22,6 +22,7 @@ Erwartet wird genau die Form, die Cowrie 3.0.14 schickt
 from __future__ import annotations
 
 import json
+import string
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Literal
@@ -45,9 +46,18 @@ MAX_ASSISTANT_CHARS = 32_768
 MAX_TOTAL_CHARS = 131_072
 # Befehl am Ende des System-Prompts (Exec), wie MAX_USER_CHARS.
 MAX_COMMAND_CHARS = MAX_USER_CHARS
+# Hostname, Benutzer und Verzeichnis im System-Prompt. Cowrie 3.0.14 setzt
+# dort den Hostnamen aus cowrie.cfg, den Login-Namen (laut userdb.txt nur
+# root oder admin, Cowrie vergleicht exakt) und "/" ein: self.cwd ändert sich
+# im LLM-Backend nie. Feste ASCII-Mengen statt str.isalnum(), das auch
+# Unicode-Buchstaben durchlässt. So bleibt der Befehl der einzige freie Text.
 MAX_HOSTNAME_CHARS = 64
-MAX_USERNAME_CHARS = 256
+MAX_USERNAME_CHARS = 32
 MAX_CWD_CHARS = 1024
+_ALNUM = frozenset(string.ascii_letters + string.digits)
+HOSTNAME_CHARS = _ALNUM | frozenset(".-")
+USERNAME_CHARS = _ALNUM | frozenset("._-")
+CWD_CHARS = _ALNUM | frozenset("._-/")
 
 # Wörtlich aus cowrie/llm/protocol.py (3.0.14). Cowrie hängt den Satz an jeden
 # System-Prompt; was davor steht, ist die Persona.
@@ -115,10 +125,12 @@ def persona_of(system: str) -> str:
 
     Getrennt wird am ersten Vorkommen des Guidance-Satzes. Der Befehl am Ende
     ist Angreifertext und darf den Satz oder das Hostname-Muster selbst
-    enthalten; er steht immer hinter dem echten Satz. Zerlegt wird mit
-    ``str.find`` statt mit einem regulären Ausdruck: Ein Muster mit mehreren
-    begrenzten Wiederholungen kann bei feindlicher Eingabe sehr lange
-    zurücksetzen.
+    enthalten; er steht immer hinter dem echten Satz. Hostname, Benutzer und
+    Verzeichnis dürfen nur Zeichen aus festen ASCII-Mengen enthalten, ohne
+    Anführungszeichen und Leerzeichen; damit bleibt der Befehl der einzige
+    freie Text. Zerlegt wird mit ``str.find`` statt mit einem regulären
+    Ausdruck: Ein Muster mit mehreren begrenzten Wiederholungen kann bei
+    feindlicher Eingabe sehr lange zurücksetzen.
     """
     cut = system.find(COWRIE_GUIDANCE)
     if cut < 0:
@@ -129,18 +141,18 @@ def persona_of(system: str) -> str:
         raise RequestRejected("herkunft")
     start = len(_HOSTNAME)
     end = rest.find(_USERNAME, start)
-    hostname = rest[start:end]
-    if end < 0 or not hostname or len(hostname) > MAX_HOSTNAME_CHARS or "'" in hostname:
+    if end < 0 or not _plain(rest[start:end], HOSTNAME_CHARS, MAX_HOSTNAME_CHARS):
         raise RequestRejected("herkunft")
 
     start = end + len(_USERNAME)
     end = rest.find(_CWD, start)
-    if end < 0 or end - start > MAX_USERNAME_CHARS:
+    if end < 0 or not _plain(rest[start:end], USERNAME_CHARS, MAX_USERNAME_CHARS):
         raise RequestRejected("herkunft")
 
     start = end + len(_CWD)
     end = rest.find(_CWD_END, start)
-    if end < 0 or end - start > MAX_CWD_CHARS:
+    cwd = rest[start:end]
+    if end < 0 or not cwd.startswith("/") or not _plain(cwd, CWD_CHARS, MAX_CWD_CHARS):
         raise RequestRejected("herkunft")
 
     tail = rest[end + len(_CWD_END) :]
@@ -149,6 +161,11 @@ def persona_of(system: str) -> str:
     ):
         raise RequestRejected("herkunft")
     return persona
+
+
+def _plain(value: str, allowed: frozenset[str], longest: int) -> bool:
+    """1 bis ``longest`` Zeichen, alle aus ``allowed``."""
+    return 0 < len(value) <= longest and all(c in allowed for c in value)
 
 
 def persona_sha256(persona: str) -> str:
