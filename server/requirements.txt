@@ -13,3 +13,11 @@ maxminddb==3.2.0
 pydantic-settings==2.15.0
 # Liest die ATT&CK-Regeln aus rules/attack.yml (Schritt 6.1). Wie in der Sensor-CI.
 pyyaml==6.0.3
+# HTTP-Client des LLM-Gateways (Schritt 7.2, E-043): asynchron, mit
+# Keep-Alive und Zeitlimits. Dieselbe Version, die Starlettes TestClient nutzt.
+# httpcore2 legt httpx2 selbst exakt fest.
+httpx2==2.13.0
+# Von httpx2 ohne feste Version verlangt, deshalb hier gepinnt (E-010).
+# truststore prüft TLS gegen die Zertifikate des Systems (ca-certificates).
+truststore==0.10.4
+idna==3.20

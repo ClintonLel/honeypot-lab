@@ -12,7 +12,6 @@ verwerfen, speichern (E-009).
 
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 from hashlib import sha256
@@ -20,13 +19,14 @@ from collections import Counter
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.attack import classify
+from app.auth import bearer, rejection_fields, token_matches
 from app.config import Settings
 from app.enrichment import Enricher, Origin
 from app.events import MAX_BATCH, EventRejected, NormalizedEvent, normalize
@@ -36,8 +36,6 @@ from app.stream import publish_stored
 
 logger = logging.getLogger("lab.ingest")
 router = APIRouter()
-
-bearer = HTTPBearer(auto_error=False)
 
 
 def settings_of(request: Request) -> Settings:
@@ -50,19 +48,9 @@ async def require_sensor_token(
 ) -> None:
     """Prüft das Bearer-Token des Sensors in konstanter Zeit."""
     expected = settings_of(request).ingest_token.get_secret_value()
-    given = credentials.credentials if credentials else ""
-    if not expected or not hmac.compare_digest(given, expected):
-        # Für die Fehlersuche die Form des Headers festhalten, nie den Wert:
-        # Schema, Länge und ob ein Platzhalter durchgereicht wurde.
-        logger.warning(
-            "ingest abgelehnt",
-            extra={
-                "scheme": credentials.scheme if credentials else None,
-                "laenge": len(given),
-                "erwartete_laenge": len(expected),
-                "sieht_aus_wie_platzhalter": given.startswith("${"),
-            },
-        )
+    if not token_matches(credentials, expected):
+        # Für die Fehlersuche die Form des Headers festhalten, nie den Wert.
+        logger.warning("ingest abgelehnt", extra=rejection_fields(credentials, expected))
         # Die Antwort selbst sagt nicht, ob das Token fehlte oder falsch war.
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="nicht berechtigt")
 

@@ -114,7 +114,11 @@ Internet ──443──> Caddy (globe-demo, unverändert bis auf Netz und Site-
                     │  Netz lab_edge
                     ▼
                   api (FastAPI, :8000) ──lab_internal──> db (PostgreSQL)
-                                                           ▲
+                    │                                      ▲
+                    │ Netz lab_egress                      │
+                    ▼                                      │
+                  Internet (LLM-Anbieter, ab 7.2)          │
+                                                           │
                   worker ──────────────lab_internal────────┘
                     │  Netz lab_egress
                     ▼
@@ -133,7 +137,7 @@ und zwar über den vorhandenen Caddy.
 | Dienst   | Image                                   | Netzwerke                  | Host-Ports | Aufgabe                                    |
 |----------|-----------------------------------------|----------------------------|------------|--------------------------------------------|
 | `db`     | `postgres:18` (Tag und Digest in 3.3)   | `lab_internal`             | keine      | Datenbank, Volume `honeypot-lab_pgdata`    |
-| `api`    | eigenes Image auf `python:3.12-slim` (gepinnt) | `lab_internal`, `lab_edge`, Alias `lab-api` | keine | Ingest, SSE-Stream, Statistik, Mitschnitte, LLM-Gateway (Port 8000 im Container) |
+| `api`    | eigenes Image auf `python:3.12-slim` (gepinnt) | `lab_internal`, `lab_edge`, Alias `lab-api`, `lab_egress` (ab 7.2) | keine | Ingest, SSE-Stream, Statistik, Mitschnitte, LLM-Gateway (Port 8000 im Container) |
 | `worker` | dasselbe Image wie `api`, anderer Befehl | `lab_internal`, `lab_egress` | keine    | IPinfo-Download, Aggregation, Aufräumen    |
 
 ### Docker-Netzwerke
@@ -141,8 +145,8 @@ und zwar über den vorhandenen Caddy.
 | Netzwerk       | Art                                      | Mitglieder         | Zweck                                           |
 |----------------|------------------------------------------|--------------------|-------------------------------------------------|
 | `lab_internal` | `internal: true`, ohne Internetzugang    | db, api, worker    | Datenbankzugriff, db hat keinen Weg nach außen  |
-| `lab_edge`     | eigenes Bridge-Netz, einmal von Hand angelegt, in beiden Projekten `external` | Caddy, api | Caddy erreicht nur die API. Die API erreicht darüber den LLM-Anbieter. |
-| `lab_egress`   | Bridge-Netz des Lab-Projekts             | worker             | ausgehender Download der IPinfo-Datenbank       |
+| `lab_edge`     | eigenes Bridge-Netz, einmal von Hand angelegt, in beiden Projekten `external` | Caddy, api | Caddy erreicht nur die API. Ursprünglich auch der Weg der API zum LLM-Anbieter; seit 7.2 geht der über `lab_egress` (E-043). |
+| `lab_egress`   | Bridge-Netz des Lab-Projekts             | worker, api (ab 7.2) | ausgehend: Download der IPinfo-Datenbank, Aufrufe beim LLM-Anbieter |
 
 `gate` und die übrigen Dienste der Webseite sehen keinen Lab-Container, und
 die Datenbank ist nur aus `lab_internal` erreichbar.

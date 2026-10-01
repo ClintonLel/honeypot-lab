@@ -85,9 +85,25 @@ services:
       IP_HMAC_KEY: ${IP_HMAC_KEY:?IP_HMAC_KEY fehlt in der .env}
       INGEST_TOKEN: ${INGEST_TOKEN:?INGEST_TOKEN fehlt in der .env}
       IPINFO_DB_PATH: /data/ipinfo.mmdb
-      # Erst ab Phase 7 nötig.
+      # LLM-Gateway (Schritt 7.2, E-043). Alles optional: Fehlt etwas oder ist
+      # es ungültig, startet die API trotzdem, nur das Gateway antwortet mit
+      # 503. Bedeutung und Vorgaben stehen in .env.example und server/README.md.
+      LLM_GATEWAY_ENABLED: ${LLM_GATEWAY_ENABLED:-false}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_GATEWAY_TOKEN: ${LLM_GATEWAY_TOKEN:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-}
+      LLM_MAX_TOKENS_PARAM: ${LLM_MAX_TOKENS_PARAM:-max_completion_tokens}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-}
+      LLM_PRICE_INPUT_EUR: ${LLM_PRICE_INPUT_EUR:-}
+      LLM_PRICE_CACHED_INPUT_EUR: ${LLM_PRICE_CACHED_INPUT_EUR:-}
+      LLM_PRICE_OUTPUT_EUR: ${LLM_PRICE_OUTPUT_EUR:-}
+      LLM_BUDGET_MONTH_EUR: ${LLM_BUDGET_MONTH_EUR:-}
+      LLM_BUDGET_DAY_EUR: ${LLM_BUDGET_DAY_EUR:-}
+      LLM_CALLS_PER_MINUTE: ${LLM_CALLS_PER_MINUTE:-}
+      LLM_PROMPT_SHA256: ${LLM_PROMPT_SHA256:-}
     depends_on:
       db:
         condition: service_healthy
@@ -97,6 +113,10 @@ services:
         # Unter diesem Namen findet Caddy die API (E-021).
         aliases:
           - lab-api
+      # Ausgehend zum LLM-Anbieter (E-043). lab_edge ist zwar kein internes
+      # Netz, gehört aber nicht dem Lab allein; der Weg nach außen soll nicht
+      # davon abhängen, wie es angelegt ist.
+      lab_egress: {}
     read_only: true
     tmpfs:
       - /tmp
@@ -164,7 +184,7 @@ networks:
   # Ohne Weg ins Internet. Hier hängt die Datenbank.
   lab_internal:
     internal: true
-  # Ausgehend für den Worker.
+  # Ausgehend: Worker (IPinfo-Download) und API (LLM-Anbieter, E-043).
   lab_egress: {}
   # Von Hand angelegt (docker network create lab_edge), auch der Caddy der
   # Webseite hängt darin. Deshalb external.
