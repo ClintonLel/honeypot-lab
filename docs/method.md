@@ -148,7 +148,10 @@ bleiben während der Laufzeit gleich:
 - Anbieter, Modell-ID, `temperature`, `max_tokens`
 - Commit von `sensor/persona/prompt.md`
 - Cowries Begrenzung je Adresse (`rate_limit_requests`, `rate_limit_window`)
-- Grenzen des Gateways: Monatsbudget, Aufrufe je Minute, Zeitlimit
+- Grenzen des Gateways: Monats- und Tagesbudget, Aufrufe je Minute,
+  Zeitlimit (E-043)
+- Hash des Persona-Teils im System-Prompt, den das Gateway prüft
+  (`LLM_PROMPT_SHA256`, E-043)
 - Startwert des `jhash`
 
 Vorgaben dazu:
@@ -540,6 +543,6 @@ deshalb spätestens 14 Tage nach T1, bei Verlängerung also bis T0 + 84 Tage.
 
 - `AGENTS.md`: Forschungsfrage und harte Regeln
 - `docs/decisions.md`: E-002, E-004, E-008, E-009, E-014, E-015, E-017, E-022,
-  E-024, E-025, E-030, E-039, E-040, E-041, E-042
+  E-024, E-025, E-030, E-039, E-040, E-041, E-042, E-043
 - `sensor/persona/persona.md`: Persona und bekannte Unterschiede
 - `docs/campaigns.md`: Kampagnen, Normalisierung und ihre Grenzen

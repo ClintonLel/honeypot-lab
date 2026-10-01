@@ -60,6 +60,7 @@ bei der Übernahme ausformuliert.
 | E-040 | Vorab-Registrierung des Experiments in `docs/method.md`     | angenommen                                     |
 | E-041 | Patch für cowrie-b ist Voraussetzung für den Start          | angenommen                                     |
 | E-042 | Mitschnitte von B erst nach dem Ende der Laufzeit öffentlich | angenommen                                     |
+| E-043 | LLM-Gateway: Grenzen, Herkunftsprüfung und Kosten           | angenommen                                     |
 
 ---
 
@@ -1990,3 +1991,131 @@ Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
 - Die Freigabe ist eine Einstellung auf dem Hauptserver, die Tom nach T1 von
   Hand setzt. Ohne sie bleiben Mitschnitte aus B verborgen; ein Fehler in der
   Einstellung darf sie nicht vorzeitig öffentlich machen.
+
+## E-043: LLM-Gateway: Grenzen, Herkunftsprüfung und Kosten
+
+- Status: angenommen
+- Datum: 2026-10-01
+- Quelle: Schritt 7.2, Plan von Claude Code, vom User mit Änderungen
+  freigegeben. Grundlage: Quellcode von Cowrie 3.0.14
+  (`cowrie/llm/llm.py`, `cowrie/llm/protocol.py`).
+
+**Entscheidung:**
+
+- **Endpunkt** `POST /v1/chat/completions` im OpenAI-Format, Anbieter OpenAI,
+  über Basis-URL, Modell und Preise austauschbar. Reihenfolge: Token
+  konfiguriert (sonst 503), Token gültig (sonst 401, keine Zeile), Schalter
+  und Konfiguration (sonst 503, Status `disabled`), Anfrage (400 oder 413,
+  `rejected`), Budget (429 `budget_exceeded`), Minutengrenze (429
+  `rate_limited`), Anbieter (504 `timeout`, 502 `upstream_error`, 200 `ok`).
+  Fehler im OpenAI-Format mit neutralem Text, nie mit Details vom Anbieter.
+- **Die Anfrage gilt als feindlich.** Erlaubt sind nur die Felder, die Cowrie
+  schickt (`model`, `messages`, `max_tokens`, `temperature`); die drei Werte
+  außer `messages` werden ignoriert, alles andere abgelehnt. `content` muss
+  ein String sein. Grenzen, abgeleitet aus Cowrie 3.0.14 und dem Prompt:
+
+  | Grenze | Wert | Herleitung |
+  |--------|------|------------|
+  | Nachrichten | 12 | 1 System + 10 Verlauf + 1 Reserve |
+  | System | 48.000 Zeichen | Persona 29.641 + rund 600 von Cowrie + Befehl 4.096, plus 40 % |
+  | user | 8.192 | Cowrie kürzt Befehle auf 4.096 |
+  | assistant | 32.768 | frühere Antworten, begrenzt durch die Ausgabegrenze |
+  | gesamt | 131.072 Zeichen | realistisch höchstens rund 95.000 |
+  | Rumpf | 1 MiB | wie Caddy (E-021) |
+
+- **Herkunftsprüfung:** Der System-Prompt muss Cowries Form haben: Persona,
+  dann Cowries Satz gegen Prompt-Injection, dann der Satz mit Hostname,
+  Benutzer und Verzeichnis, bei Exec zuletzt der Befehl. Getrennt wird am
+  ersten Vorkommen des Satzes; der Befehl ist Angreifertext und darf den Satz
+  oder das Hostname-Muster selbst enthalten. Der SHA-256 des Teils davor
+  (`prompt_sha256`) steht in jeder Logzeile und lässt sich in
+  `LLM_PROMPT_SHA256` pinnen. Zerlegt wird mit `str.find`, nicht mit einem
+  regulären Ausdruck.
+- **Modell, Ausgabegrenze und `temperature`** kommen aus der Konfiguration.
+  Die Nachrichten gehen unverändert weiter, damit der Anbieter den
+  gleichbleibenden Anfang zwischenspeichert (E-015). Das Feld für die
+  Ausgabegrenze ist einstellbar (`max_completion_tokens` bei OpenAI,
+  `max_tokens` bei anderen).
+- **Budget** für Kalendermonat und -tag in UTC, im Speicher des Prozesses.
+  Beim ersten Aufruf nach dem Start aus `llm_usage` geladen; ohne lesbaren
+  Stand ruft das Gateway den Anbieter nicht. Geprüft wird vor dem Aufruf, ohne
+  Reservierung. Kosten zählen, sobald die Antwort da ist, für den Tag, an dem
+  die Anfrage begann.
+- **Minutengrenze** als gleitendes 60-Sekunden-Fenster über alle Aufrufe.
+- **Kosten** in Mikro-Euro mit eigenem Preis für zwischengespeicherte Tokens,
+  aufgerundet. Bei Zeitüberschreitung und fehlendem `usage` eine obere
+  Schätzung (Zeichen / 3 als Eingabe ohne Cache, volle Ausgabe).
+- **Neue Spalte** `llm_usage.cached_tokens` (Migration 0003), neuer Status
+  `disabled`. `session_id` bleibt leer (E-041).
+- **Konfiguration** nur über die `.env`. Kein Wert des Gateways verhindert den
+  Start der API; Platzhalter und zu kurze Secrets gelten als fehlend
+  (Maßstab wie E-023). Ein Schalter `LLM_GATEWAY_ENABLED`, Vorgabe aus.
+- **Netz:** Die API hängt zusätzlich in `lab_egress`.
+- **HTTP-Client** `httpx2` (bisher nur für Tests) wandert in die
+  Laufzeit-Abhängigkeiten; `truststore` und `idna`, die es ohne feste Version
+  verlangt, sind exakt gepinnt (E-010).
+
+**Begründung:**
+
+- Ein gestohlenes Gateway-Token soll kein allgemeiner Zugang zu einem Modell
+  sein. Mit der Herkunftsprüfung ist der einzige freie Text im System-Prompt
+  der Platz des Befehls, also genau das, was jeder SSH-Angreifer auf
+  cowrie-b ohnehin eingeben kann, und jeder Aufruf trägt den ganzen
+  Persona-Prompt. Wer den Sensor übernimmt, hat allerdings auch den Prompt;
+  die eigentliche Sicherung bleiben Budget und Minutengrenze.
+- Der gepinnte Hash ist zugleich ein Fingerabdruck des Prompts. Eine Änderung
+  während der Laufzeit, die `method.md` 4.5 ausschließt, fällt sofort auf.
+- Budget im Speicher statt einer Summe je Anfrage aus der Datenbank: kein
+  Zugriff je Aufruf, und gleichzeitige Anfragen sehen Kosten sofort. Ohne
+  Reservierung können parallele Anfragen das Budget überschreiten, aber nur
+  um die gerade laufenden. Weil das Zeitlimit unter 60 Sekunden liegt, laufen
+  höchstens `LLM_CALLS_PER_MINUTE` gleichzeitig.
+- Ein gleitendes Fenster statt eines Token-Buckets wie in `ratelimit.py`: Es
+  lässt in keinen 60 Sekunden mehr als die Grenze durch, und daraus folgt die
+  Schranke für gleichzeitige Anfragen.
+- Ein Anbieter rechnet auch Antworten ab, auf die das Gateway nicht mehr
+  wartet. Ohne Schätzung könnte ein langsamer Anbieter das Budget unbemerkt
+  leeren.
+- `disabled` statt keiner Zeile: Jede Anfrage mit gültigem Token soll in
+  `llm_usage` stehen, auch wenn das Gateway aus ist.
+- Felder wie `stream` oder `tools` ablehnen statt ignorieren: Cowrie schickt
+  sie nie, wer sie schickt, ist nicht cowrie-b.
+- `lab_edge` wurde ohne `--internal` angelegt (E-021), die API käme also auch
+  darüber hinaus. Das Netz gehört aber nicht dem Lab allein und wird in
+  Website-Demo verwaltet; wird es je zur Härtung intern, bliebe das Gateway
+  sonst ohne Weg zum Anbieter. Kein `gw_priority`: Beide Netze gehen über
+  dieselbe Adresse des Hosts hinaus, und es entfiele die Abhängigkeit von
+  Docker 28.
+- `httpx2` statt `urllib`: asynchron, ohne die Ereignisschleife zu blockieren,
+  mit Gesamtzeitlimit und Keep-Alive. Ohne Keep-Alive stünde in jeder
+  Antwortzeit von B ein TLS-Handshake (H3). Dieselbe Bibliothek nutzt schon
+  Starlettes TestClient.
+
+**Konsequenzen:**
+
+- Lasttest (`tests/test_llm_load.py`): Bei einem Budget für 10 Aufrufe
+  gingen mit 8 parallelen Schleifen 16 Aufrufe durch, mit 24 gleichzeitig
+  gestarteten Anfragen 24. Beides liegt innerhalb der Schranke „laufende
+  Anfragen“. Danach gab es nur noch 429 ohne Aufruf beim Anbieter.
+- Für 7.3: Der Hash hängt an den eigenen Adressen des Sensors (`{ip}`,
+  `{ip6}` im Prompt) und setzt voraus, dass `system_prompt` und
+  `system_prompt_exec` denselben Prompt bekommen. Der Patch aus E-041 darf
+  den Teil von Cowrie, der den System-Inhalt baut, nicht verändern, sonst
+  schlägt die Herkunftsprüfung an. `server/tests/cowrie_llm.py` bildet
+  Cowrie 3.0.14 nach.
+- Ein Anbieter, der Anfragen ohne `user`-Nachricht ablehnt, scheidet aus:
+  Fast der ganze Verkehr ist Exec, und Exec schickt nur die
+  System-Nachricht. Die Probeaufrufe in `server/README.md` prüfen beide
+  Formen.
+- Die Werte der Grenzen und `LLM_PROMPT_SHA256` gehören in den Start-Eintrag
+  (`method.md` 4.5). Das Tagesbudget großzügig ansetzen: Ein greifendes
+  Tageslimit macht B für den Rest des Tages stumm (Ausfallzeiten).
+- Uvicorn muss bei einem Prozess bleiben. Mit mehreren hätte jeder sein
+  eigenes Budget.
+- Beim Herausziehen der Token-Prüfung (`app/auth.py`) fiel auf, dass
+  `/ingest` bei Nicht-ASCII-Zeichen im Token mit 500 statt 401 antwortete
+  (`hmac.compare_digest` auf Strings). Der Vergleich läuft jetzt auf Bytes.
+- Bewusst nicht enthalten: Grenze je IP-Hash oder Sitzung (E-041),
+  Wiederholungen beim Anbieter, eine Sperre in Caddy auf die Adresse des
+  Sensors und eine Liste erlaubter Ziele für den Ausgang. Die letzten beiden
+  wären eine Änderung an Website-Demo bzw. eine spätere Härtung.
