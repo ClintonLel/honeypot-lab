@@ -14,8 +14,11 @@ from datetime import timedelta
 import httpx2
 import pytest
 
+from decimal import Decimal
+
 from app.config import PLACEHOLDER
 from app.llm_gateway import Gateway, build_config, gateway_of
+from app.llm_limits import Prices, estimate_micros
 from app.llm_request import persona_sha256
 from tests.cowrie_llm import (
     PERSONA,
@@ -502,6 +505,72 @@ def test_provider_failures_map_to_502_or_504(llm, reply, status):
     assert response.status_code == (504 if status == "timeout" else 502)
     assert ledger.statuses == [status]
     assert upstream.calls == 1
+
+
+def raise_with(error_type):
+    def reply(request):
+        raise error_type("abbruch", request=request)
+
+    return reply
+
+
+def expected_estimate(body) -> int:
+    chars = sum(len(m["content"]) for m in body["messages"])
+    prices = Prices(input=Decimal("0.40"), cached_input=Decimal("0.10"), output=Decimal("1.60"))
+    return estimate_micros(chars, 2048, prices)
+
+
+@pytest.mark.parametrize(
+    ("reply", "status"),
+    [
+        (raise_with(httpx2.ReadError), "upstream_error"),
+        (raise_with(httpx2.WriteError), "upstream_error"),
+        (raise_with(httpx2.RemoteProtocolError), "upstream_error"),
+        (raise_with(httpx2.DecodingError), "upstream_error"),
+        (lambda r: httpx2.Response(200, content=b"x" * (1024 * 1024 + 10)), "upstream_error"),
+        (raise_with(httpx2.ReadTimeout), "timeout"),
+        (raise_with(httpx2.WriteTimeout), "timeout"),
+    ],
+)
+def test_an_abort_after_sending_books_the_estimate(llm, reply, status):
+    """Die Anfrage war unterwegs; der Anbieter kann abrechnen."""
+    client, make = llm
+    upstream, ledger = ready(make, upstream=Upstream(reply))
+    body = exec_request("id")
+    response = post(client, body)
+    assert response.status_code == (504 if status == "timeout" else 502)
+    [row] = ledger.rows
+    assert row.status == status
+    assert row.cost_micros == expected_estimate(body) > 0
+
+
+@pytest.mark.parametrize(
+    ("reply", "status"),
+    [
+        (raise_with(httpx2.ConnectError), "upstream_error"),
+        (raise_with(httpx2.ConnectTimeout), "timeout"),
+        (raise_with(httpx2.PoolTimeout), "timeout"),
+        (lambda r: httpx2.Response(500, json={"error": {"message": "intern"}}), "upstream_error"),
+        (lambda r: httpx2.Response(401, json={"error": {"code": "invalid_api_key"}}), "upstream_error"),
+    ],
+)
+def test_no_connection_or_an_error_answer_books_nothing(llm, reply, status):
+    """Sonst leerte ein Ausfall des Anbieters das Tagesbudget und machte B stumm."""
+    client, make = llm
+    upstream, ledger = ready(make, upstream=Upstream(reply))
+    response = post(client, exec_request("id"))
+    assert response.status_code == (504 if status == "timeout" else 502)
+    [row] = ledger.rows
+    assert row.status == status
+    assert row.cost_micros == 0
+
+
+def test_an_unreachable_provider_does_not_empty_the_budget(llm):
+    client, make = llm
+    upstream, ledger = ready(make, upstream=Upstream(raise_with(httpx2.ConnectError)), llm_budget_day_eur="0.002")
+    codes = {post(client, exec_request("id")).status_code for _ in range(20)}
+    assert codes == {502}
+    assert upstream.calls == 20
 
 
 def test_a_provider_429_is_not_passed_on_as_429(llm):

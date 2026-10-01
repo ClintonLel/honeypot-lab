@@ -547,11 +547,20 @@ class Gateway:
                         body += chunk
                         if len(body) > MAX_UPSTREAM_BYTES:
                             raise _TooLarge
+        except (httpx2.ConnectTimeout, httpx2.PoolTimeout):
+            # Keine Verbindung, nichts kam beim Anbieter an: 0. Sonst leerte
+            # ein Ausfall des Anbieters das Budget und machte B stumm.
+            return Outcome("timeout", elapsed())
+        except httpx2.ConnectError:
+            return Outcome("upstream_error", elapsed())
         except (TimeoutError, httpx2.TimeoutException):
-            # Der Anbieter rechnet ab, auch wenn wir nicht mehr warten.
+            # Ab hier war die Anfrage unterwegs. Der Anbieter rechnet ab, auch
+            # wenn wir nicht mehr warten: obere Schätzung.
             return Outcome("timeout", elapsed(), cost_micros=estimate, estimated=True)
         except (_TooLarge, httpx2.HTTPError, OSError):
-            return Outcome("upstream_error", elapsed())
+            # Lese- und Schreibfehler, abgebrochene Verbindung, kaputte
+            # Kodierung, zu große Antwort: wie eine Zeitüberschreitung.
+            return Outcome("upstream_error", elapsed(), cost_micros=estimate, estimated=True)
 
         latency = elapsed()
         if upstream_status != 200:
