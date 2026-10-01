@@ -18,10 +18,15 @@ Reihenfolge je Anfrage (E-043):
 2. Token fehlt oder falsch: 401, keine Zeile, nur eine Logzeile ohne Inhalt.
 3. Gateway abgeschaltet oder unvollständig konfiguriert: 503, ``disabled``.
 4. Rumpf zu groß: 413, Anfrage ungültig: 400, beides ``rejected``.
-5. Budget erreicht: 429 ``budget_exceeded``, Minutengrenze: 429
+5. Budget erreicht: 503 ``budget_exceeded``. Minutengrenze: 429
    ``rate_limited``. Der Anbieter wird nicht gerufen.
-6. Anbieter: Zeitüberschreitung 504 ``timeout``, sonstiger Fehler 502
-   ``upstream_error``, Erfolg 200 ``ok``.
+6. Anbieter: Zeitüberschreitung 504 ``timeout``, 429 des Anbieters 502
+   ``upstream_limited``, sonstiger Fehler 502 ``upstream_error``, Erfolg 200
+   ``ok``.
+
+429 entsteht nur an der Minutengrenze. Sie gehört zur Behandlung, ein
+Budgetstopp ist ein Ausfall (``docs/method.md`` 8, V3); auf dem Sensor trennt
+beides nur ``http_status``.
 """
 
 from __future__ import annotations
@@ -246,12 +251,17 @@ _ERRORS: dict[str, tuple[int, str, str, str]] = {
     "unavailable": (503, "server_error", "unavailable", "Dienst nicht verfügbar"),
     "too_large": (413, "invalid_request_error", "request_too_large", "Anfrage zu groß"),
     "invalid": (400, "invalid_request_error", "invalid_request", "Anfrage ungültig"),
-    "budget_exceeded": (429, "rate_limit_error", "budget_exceeded", "Grenze erreicht"),
+    # Ein Budgetstopp ist ein Ausfall, kein Teil der Behandlung: 503, nicht 429.
+    "budget_exceeded": (503, "server_error", "budget_exceeded", "Dienst nicht verfügbar"),
+    # Das einzige 429: die Minutengrenze.
     "rate_limited": (429, "rate_limit_error", "rate_limited", "Grenze erreicht"),
     "timeout": (504, "server_error", "upstream_timeout", "Zeitüberschreitung"),
     "upstream_error": (502, "server_error", "upstream_error", "Anbieter nicht verfügbar"),
     "internal": (500, "server_error", "internal_error", "interner Fehler"),
 }
+# Ein 429 des Anbieters, etwa dessen hartes Monatslimit. Für den Sensor wie
+# jeder andere Fehler beim Anbieter, in llm_usage mit eigenem Status.
+_ERRORS["upstream_limited"] = _ERRORS["upstream_error"]
 
 
 def error_response(kind: str, headers: dict[str, str] | None = None) -> JSONResponse:
@@ -473,7 +483,7 @@ class Gateway:
             return error_response("unavailable")
         if budget.exceeded(self._clock()):
             await self._finish(
-                UsageRecord(started_at, config.model, "budget_exceeded"), http=429, extra=prompt
+                UsageRecord(started_at, config.model, "budget_exceeded"), http=503, extra=prompt
             )
             return error_response("budget_exceeded")
         wait = window.acquire(self._monotonic())
@@ -563,6 +573,9 @@ class Gateway:
             return Outcome("upstream_error", elapsed(), cost_micros=estimate, estimated=True)
 
         latency = elapsed()
+        if upstream_status == 429:
+            # Grenze beim Anbieter, etwa das harte Monatslimit. Nicht abgerechnet.
+            return Outcome("upstream_limited", latency, upstream_status=upstream_status)
         if upstream_status != 200:
             return Outcome("upstream_error", latency, upstream_status=upstream_status)
         try:

@@ -394,19 +394,23 @@ def test_every_call_logs_the_prompt_hash(llm, caplog):
 # --- 429: Budget und Minutengrenze ---------------------------------------------
 
 
-def test_a_spent_month_stops_without_calling_the_provider(llm):
+def test_a_spent_month_stops_with_503_without_calling_the_provider(llm):
+    """Ein Budgetstopp ist ein Ausfall, kein Teil der Behandlung: 503, nicht 429."""
     client, make = llm
     upstream, ledger = ready(make, ledger=MemoryLedger(month=20_000_000))
     response = post(client, exec_request("id"))
-    assert response.status_code == 429
+    assert response.status_code == 503
+    assert response.json()["error"]["type"] == "server_error"
     assert response.json()["error"]["code"] == "budget_exceeded"
     assert ledger.statuses == ["budget_exceeded"] and upstream.calls == 0
 
 
-def test_a_spent_day_stops_without_calling_the_provider(llm):
+def test_a_spent_day_stops_with_503_without_calling_the_provider(llm):
     client, make = llm
     upstream, ledger = ready(make, ledger=MemoryLedger(month=5_000_000, day=2_000_000))
-    assert post(client, exec_request("id")).status_code == 429
+    response = post(client, exec_request("id"))
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "budget_exceeded"
     assert ledger.statuses == ["budget_exceeded"] and upstream.calls == 0
 
 
@@ -416,7 +420,7 @@ def test_the_next_day_opens_again(llm):
     upstream = Upstream()
     ledger = MemoryLedger(day=2_000_000)
     make(llm_settings(), ledger=ledger, upstream=upstream, clock=lambda: now[0])
-    assert post(client, exec_request("id")).status_code == 429
+    assert post(client, exec_request("id")).status_code == 503
     now[0] = NOW + timedelta(days=1)
     assert post(client, exec_request("id")).status_code == 200
     assert upstream.calls == 1
@@ -427,7 +431,7 @@ def test_the_budget_counts_the_calls_of_this_process(llm):
     # Jeder Aufruf kostet 1.005 µ€, das Tagesbudget reicht für zwei.
     upstream, ledger = ready(make, llm_budget_day_eur="0.002")
     codes = [post(client, exec_request("id")).status_code for _ in range(4)]
-    assert codes == [200, 200, 429, 429]
+    assert codes == [200, 200, 503, 503]
     assert upstream.calls == 2
 
 
@@ -488,7 +492,7 @@ def raise_read_timeout(request):
     ("reply", "status"),
     [
         (lambda r: httpx2.Response(500, json={"error": {"message": "intern"}}), "upstream_error"),
-        (lambda r: httpx2.Response(429, json={"error": {"code": "rate_limit_exceeded"}}), "upstream_error"),
+        (lambda r: httpx2.Response(429, json={"error": {"code": "rate_limit_exceeded"}}), "upstream_limited"),
         (lambda r: httpx2.Response(401, json={"error": {"code": "invalid_api_key"}}), "upstream_error"),
         (lambda r: httpx2.Response(200, content=b"<html>gateway</html>"), "upstream_error"),
         (lambda r: httpx2.Response(200, json={"choices": []}), "upstream_error"),
@@ -574,10 +578,36 @@ def test_an_unreachable_provider_does_not_empty_the_budget(llm):
 
 
 def test_a_provider_429_is_not_passed_on_as_429(llm):
-    """V3: 429 heißt auf dem Sensor nur „Grenze des Gateways“."""
+    """429 heißt auf dem Sensor nur Minutengrenze."""
     client, make = llm
-    ready(make, upstream=Upstream(lambda r: httpx2.Response(429, json={"error": {"message": "slow down"}})))
-    assert post(client, exec_request("id")).status_code == 502
+    limit = {"error": {"message": "limit", "code": "project_spend_limit_exceeded"}}
+    upstream, ledger = ready(make, upstream=Upstream(lambda r: httpx2.Response(429, json=limit)))
+    limited = post(client, exec_request("id"))
+    assert limited.status_code == 502
+    [row] = ledger.rows
+    assert row.status == "upstream_limited"
+    assert row.cost_micros == 0
+    # Für den Sensor derselbe Rumpf wie bei jedem anderen Fehler beim Anbieter.
+    upstream.reply = lambda r: httpx2.Response(500, json={"error": {"message": "intern"}})
+    other = post(client, exec_request("id"))
+    assert other.status_code == 502
+    assert limited.json() == other.json()
+    assert ledger.statuses == ["upstream_limited", "upstream_error"]
+
+
+def test_only_the_minute_limit_answers_429(llm):
+    client, make = llm
+    clock = [100.0]
+    upstream, ledger = Upstream(), MemoryLedger(day=1_999_000)
+    make(llm_settings(llm_calls_per_minute=1), ledger=ledger, upstream=upstream, monotonic=lambda: clock[0])
+    assert post(client, exec_request("id")).status_code == 200  # Tagesbudget danach erschöpft
+    assert post(client, exec_request("id")).status_code == 503
+    ledger2 = MemoryLedger()
+    make(llm_settings(llm_calls_per_minute=1), ledger=ledger2, upstream=upstream, monotonic=lambda: clock[0])
+    assert post(client, exec_request("id")).status_code == 200
+    assert post(client, exec_request("id")).status_code == 429
+    assert ledger.statuses == ["ok", "budget_exceeded"]
+    assert ledger2.statuses == ["ok", "rate_limited"]
 
 
 def test_usage_on_a_broken_answer_still_counts(llm):

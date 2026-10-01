@@ -261,7 +261,9 @@ class LlmUsage(Base):
     cost_micros: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
     # Dauer des Aufrufs beim Anbieter. Leer, wenn er nicht gerufen wurde.
     latency_ms: Mapped[int | None] = mapped_column(Integer)
-    # ok, rate_limited, budget_exceeded, timeout, upstream_error, rejected, disabled
+    # ok, rate_limited, budget_exceeded, timeout, upstream_error,
+    # upstream_limited (429 des Anbieters, etwa sein hartes Limit), rejected,
+    # disabled (E-043)
     status: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

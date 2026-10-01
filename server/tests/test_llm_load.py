@@ -5,7 +5,8 @@ Viele Anfragen laufen gleichzeitig gegen eine langsame Attrappe. Gezeigt wird
 
 - Das Budget greift. Überschritten wird es höchstens um die Anfragen, die
   gerade laufen, als es erreicht wurde.
-- Danach gibt es nur noch 429, und der Anbieter wird nicht mehr gerufen.
+- Danach gibt es nur noch 503, und der Anbieter wird nicht mehr gerufen. 429
+  entsteht nur an der Minutengrenze (method.md V3).
 - Jede Anfrage steht genau einmal in llm_usage.
 """
 
@@ -84,8 +85,8 @@ def test_the_budget_holds_under_parallel_requests(app, workers, stagger):
     budget = CALLS_IN_BUDGET * COST
     spent = sum(row.cost_micros for row in ledger.rows)
 
-    # Nur 200 und 429, sonst nichts.
-    assert set(codes) <= {200, 429}
+    # Nur 200 und 503, kein 429: Das gibt es nur an der Minutengrenze.
+    assert set(codes) <= {200, 503}
     assert codes.count(200) == upstream.calls == ledger.statuses.count("ok")
     # Das Budget ist erreicht ...
     assert spent >= budget
@@ -93,13 +94,13 @@ def test_the_budget_holds_under_parallel_requests(app, workers, stagger):
     assert upstream.peak > 1
     assert spent <= budget + upstream.peak * COST
     assert upstream.calls <= CALLS_IN_BUDGET + upstream.peak - 1
-    # Nach dem ersten 429 einer Schleife kommt dort keine 200 mehr.
+    # Nach dem ersten 503 einer Schleife kommt dort keine 200 mehr.
     for result in results:
-        if 429 in result:
-            assert 200 not in result[result.index(429):]
+        if 503 in result:
+            assert 200 not in result[result.index(503):]
     # Jede Anfrage genau eine Zeile.
     assert len(ledger.rows) == len(codes)
-    assert ledger.statuses.count("budget_exceeded") == codes.count(429)
+    assert ledger.statuses.count("budget_exceeded") == codes.count(503)
 
 
 def test_after_the_budget_no_request_reaches_the_provider(app):
@@ -117,7 +118,7 @@ def test_after_the_budget_no_request_reaches_the_provider(app):
     )
     results = run(app, second, workers=8, per_worker=5)
     # Ein neuer Prozess liest das Budget aus llm_usage und ruft niemanden mehr.
-    assert {code for result in results for code in result} == {429}
+    assert {code for result in results for code in result} == {503}
     assert upstream.calls == calls
 
 
