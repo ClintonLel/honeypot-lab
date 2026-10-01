@@ -59,6 +59,7 @@ bei der Übernahme ausformuliert.
 | E-039 | Kampagnen über normalisierte Befehlsfolgen, Labels als Daten | angenommen                                     |
 | E-040 | Vorab-Registrierung des Experiments in `docs/method.md`     | angenommen                                     |
 | E-041 | Patch für cowrie-b ist Voraussetzung für den Start          | angenommen                                     |
+| E-042 | Mitschnitte von B erst nach dem Ende der Laufzeit öffentlich | angenommen                                     |
 
 ---
 
@@ -1959,3 +1960,33 @@ LLM-Backend“ und stehen als Grenze in `method.md`.
   (`llm_usage.session_id`), muss der Patch die Sitzungs-ID mitschicken, etwa
   als eigenen Header. Für `method.md` ist das nicht nötig.
 - E-016 hat den Status „ersetzt durch E-041“.
+
+## E-042: Mitschnitte von B erst nach dem Ende der Laufzeit öffentlich
+
+- Status: angenommen
+- Datum: 2026-10-01
+- Quelle: Vorschlag von Claude (Projekt) bei der Planung von 6.3 und 6.4, vom
+  User angenommen
+
+**Entscheidung:** Das Session-Theater auf `/lab` (Schritt 6.4) zeigt
+Mitschnitte aus A sofort, Mitschnitte aus B erst nach dem Ende der Laufzeit
+(T1 in `method.md`). Damit erscheinen auch die Paare aus A und B mit gleicher
+Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
+
+**Begründung:**
+
+- Ein Mitschnitt enthält die Antworten der Shell. Während der Laufzeit wären
+  die Antworten von B eine Vorlage für jeden, der `/lab` beobachtet, um B zu
+  erkennen. Das könnte das Verhalten in B verändern, ohne dass es an der Shell
+  selbst liegt.
+- Nach dem Ende kostet die Veröffentlichung nichts mehr. Die Paare aus A und B
+  eignen sich dann als Auflösung des Experiments.
+
+**Konsequenzen:**
+
+- Schritt 6.3 lädt Mitschnitte aus B trotzdem während der Laufzeit hoch, denn
+  auf dem Sensor liegen sie nur 14 Tage. Bis zur Freigabe gibt die API sie
+  nicht aus.
+- Die Freigabe ist eine Einstellung auf dem Hauptserver, die Tom nach T1 von
+  Hand setzt. Ohne sie bleiben Mitschnitte aus B verborgen; ein Fehler in der
+  Einstellung darf sie nicht vorzeitig öffentlich machen.
