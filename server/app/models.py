@@ -236,7 +236,11 @@ class Cast(Base):
 
 
 class LlmUsage(Base):
-    """Eine Anfrage von cowrie-b an das LLM-Gateway (Phase 7)."""
+    """Eine Anfrage mit gültigem Token an das LLM-Gateway (Schritt 7.2, E-043).
+
+    Kein Inhalt: weder Prompt noch Antwort, nur Zahlen. Cowrie schickt weder
+    Adresse noch Sitzung mit, ``session_id`` bleibt deshalb leer (E-041).
+    """
 
     __tablename__ = "llm_usage"
     __table_args__ = (Index("ix_llm_usage_occurred_at", "occurred_at"),)
@@ -250,10 +254,14 @@ class LlmUsage(Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     completion_tokens: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     total_tokens: Mapped[int] = mapped_column(Integer, server_default=text("0"))
-    # Kosten in Millionstel Euro, damit nichts gerundet werden muss.
+    # Teil von prompt_tokens aus dem Zwischenspeicher des Anbieters (Migration 0003).
+    cached_tokens: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    # Kosten in Millionstel Euro, damit nichts gerundet werden muss. Bei
+    # "timeout" und fehlendem usage eine obere Schätzung (E-043).
     cost_micros: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
+    # Dauer des Aufrufs beim Anbieter. Leer, wenn er nicht gerufen wurde.
     latency_ms: Mapped[int | None] = mapped_column(Integer)
-    # "ok", "error", "budget_exceeded", ...
+    # ok, rate_limited, budget_exceeded, timeout, upstream_error, rejected, disabled
     status: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
