@@ -33,7 +33,7 @@ bei der Übernahme ausformuliert.
 | E-013 | Sensor-Infrastruktur mit OpenTofu                          | vorgeschlagen                                  |
 | E-014 | Persona bld-ci-03 für beide Varianten                      | angenommen                                     |
 | E-015 | Kein Banner vor dem Login, vollständiger Persona-Prompt    | angenommen                                     |
-| E-016 | Echte Downloads in cowrie-b über Cowries Download-Code     | vorgeschlagen                                  |
+| E-016 | Echte Downloads in cowrie-b über Cowries Download-Code     | ersetzt durch E-041                            |
 | E-017 | Cowrie-Konfiguration und Betrieb von cowrie-a              | angenommen                                     |
 | E-018 | Eigenes Dateisystem und erzeugte Persona-Dateien           | angenommen                                     |
 | E-019 | Port 22 per eigener nftables-Tabelle auf cowrie-a umleiten | angenommen                                     |
@@ -57,6 +57,8 @@ bei der Übernahme ausformuliert.
 | E-037 | ATT&CK-Regeln als Daten, Zuordnung beim Ingest              | angenommen, Regeln ergänzt durch E-038         |
 | E-038 | ATT&CK-Regeln erweitert, T1083 enger als bei MITRE          | angenommen                                     |
 | E-039 | Kampagnen über normalisierte Befehlsfolgen, Labels als Daten | angenommen                                     |
+| E-040 | Vorab-Registrierung des Experiments in `docs/method.md`     | angenommen                                     |
+| E-041 | Patch für cowrie-b ist Voraussetzung für den Start          | angenommen                                     |
 
 ---
 
@@ -602,7 +604,7 @@ Dateien wörtlich als System-Prompt für cowrie-b.
 
 ## E-016: Echte Downloads in cowrie-b über Cowries eigenen Download-Code
 
-- Status: vorgeschlagen
+- Status: ersetzt durch E-041
 - Datum: 2026-09-17
 - Quelle: Wunsch des Users nach Schritt 2.1
 
@@ -1829,3 +1831,122 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
 - Der Job hält je Sitzung mit Befehlen ein paar Felder im Speicher. Bei
   zehntausenden Sitzungen sind das wenige MB; wächst das deutlich, braucht
   es eine Aggregation in SQL.
+
+## E-040: Vorab-Registrierung des Experiments in `docs/method.md`
+
+- Status: angenommen
+- Datum: 2026-10-01
+- Quelle: Schritt 7.1, Entwurf von Claude (Projekt), Review durch Antigravity
+
+**Entscheidung:**
+
+- `docs/method.md` legt Hypothesen, Messgrößen, Ausschlüsse, Auswertung,
+  Laufzeit und Grenzen fest, bevor B Daten erhebt. Ab dem Start wird es nicht
+  mehr geändert (AGENTS.md).
+- **Primär ist H2**, eine Äquivalenzhypothese für Exec-Zugriffe: Der Anteil
+  neuer Quellen, die binnen 24 Stunden nach ihrem ersten Befehl einen Befehl
+  mit anderer Normalform schicken (M1), unterscheidet sich zwischen B und A um
+  weniger als 5 Prozentpunkte. H3 (Antwortzeit) ist sekundär, H1 (interaktive
+  Sitzungen) und H4 (Echtheitstests) sind explorativ.
+- **Analyseeinheit ist die Quelle** (`ip_hash`). Die Primärgröße nimmt nur
+  Quellen, die vor dem Start nie da waren. Intervalle per Bootstrap über
+  Quellen.
+- **Laufzeit 42 Tage**, einmal um 28 Tage verlängerbar, wenn weniger als 1.000
+  Quellen je Variante zusammenkommen. Entschieden wird nur nach der Fallzahl.
+- **Start und Ende ergeben sich aus den Daten.** Startzeitpunkt und
+  Behandlungsparameter kommen in einen eigenen Eintrag hier, nicht in
+  `method.md`. Der Git-Tag `vorab-b` friert `method.md` und den Code ein, der
+  die Messgrößen bestimmt.
+
+**Begründung:**
+
+- Der Bauplan sah H1 (mehr Befehle je interaktiver Sitzung) als Kern vor. In
+  den ersten 14 Tagen gab es drei interaktive Sitzungen, zwei davon eigene
+  Tests. H1 ist in vertretbarer Laufzeit nicht prüfbar.
+- „Kein Unterschied bei Exec“ (H2 im Bauplan) lässt sich nur mit einer vorher
+  festgelegten Grenze zeigen, nicht mit einem nicht signifikanten Test.
+- Der erste Exec-Befehl einer Quelle fällt, bevor die Shell etwas ausgegeben
+  hat. Was danach kommt, kann von der Shell abhängen, und genau das misst M1.
+- Nur neue Quellen: Das schließt den einmaligen Wechsel von A nach B für
+  Quellen aus der Vorperiode aus und nimmt das Werkzeug heraus, das 72 % der
+  Sitzungen stellt und dessen 43 Quellen schon in der Vorperiode aktiv waren.
+- Der Bauplan verlangt in Schritt 7.4 das Startdatum in `method.md`,
+  AGENTS.md verbietet Änderungen nach dem Start. Ein Startzeitpunkt aus den
+  Daten und ein eigener Eintrag hier lösen den Widerspruch.
+
+**Konsequenzen:**
+
+- Vor dem Start von B müssen die Pflichtpunkte aus `method.md`, Abschnitt 5,
+  erfüllt sein, darunter der Patch aus E-041.
+- Die Auswertung (Schritt 7.5) setzt die Definitionen aus `method.md` um und
+  läuft zuerst als A/A-Prüfung auf der Vorperiode.
+- `/lab` zeigt während der Laufzeit nur Zwischenstände. Entschieden wird
+  einmal nach dem Ende.
+- Abweichungen nach dem Start kommen als eigener Eintrag hierher.
+
+## E-041: Patch für cowrie-b ist Voraussetzung für den Start
+
+- Status: angenommen
+- Datum: 2026-10-01
+- Quelle: Schritt 7.1, Prüfung des Quellcodes von Cowrie 3.0.14 und 3.0.15
+  durch Claude (Projekt). Ersetzt E-016 und erweitert es.
+
+**Befund** im LLM-Backend von Cowrie 3.0.14 (`cowrie/llm/protocol.py`, in
+3.0.15 unverändert):
+
+- `cowrie.command.input` entsteht nur in interaktiven Sitzungen
+  (`lineReceived`). Ein Exec-Befehl geht ohne Ereignis direkt ans Modell. In A
+  loggt die klassische Shell jeden Exec-Befehl.
+- Cowrie begrenzt in B die Befehle je Adresse (Standard 20 je 60 Sekunden)
+  und antwortet darüber mit leerer Ausgabe. Das steht nur im Textlog, nicht in
+  `cowrie.json`. Für Fehler des Anbieters und Antwortzeiten gibt es ebenfalls
+  kein Ereignis.
+- Nach dem Login schreibt B fest `Welcome to <hostname>`. Das Verzeichnis im
+  Prompt bleibt immer `/`, auch nach `cd`.
+- `wget` und `curl` laden in B nichts herunter (E-016).
+
+**Entscheidung:** cowrie-b läuft mit einem eigenen Image auf Basis des
+gepinnten Cowrie-Images von A, mit einem Patch am LLM-Backend:
+
+1. Exec-Befehle erzeugen `cowrie.command.input` wie in A, und zwar vor der
+   Begrenzung je Adresse.
+2. Jeder Befehl erzeugt genau ein Ereignis `cowrie.llm.response` mit `status`
+   (`ok`, `empty`, `error`, `rate_limited`, `client_gone`), `latency_ms`,
+   `http_status` und der Länge der Ausgabe. Der Ingest nimmt es an und legt
+   Status und Antwortzeit zusätzlich in einer abgeleiteten Tabelle ab.
+3. Nach dem Login gibt B die motd aus `etc/motd` aus (E-015).
+4. `wget` und `curl` laden über Cowries Download-Code wirklich herunter und
+   schreiben dieselben Ereignisse wie A. Begründung, Grenzen und Ablauf wie in
+   E-016.
+
+Bewusst nicht im Patch: das Verzeichnis im Prompt, das Gedächtnis von zehn
+Befehlen, SFTP und Weiterleitungen. Sie gehören zur Behandlung „Cowries
+LLM-Backend“ und stehen als Grenze in `method.md`.
+
+**Begründung:**
+
+- Ohne Punkt 1 hätten fast alle Sitzungen von B in der Datenbank keine
+  Befehle. Jeder Vergleich mit A wäre ein Artefakt des Loggings.
+- Ohne Punkt 2 sind H3, die Ausfallzeiten und die Prüfung, ob B überhaupt
+  geantwortet hat, nicht messbar. Nach dem Start nachgerüstet, fehlten diese
+  Daten für den Anfang der Laufzeit.
+- Punkte 3 und 4 entfernen Unterschiede, die nichts mit dem Sprachmodell zu
+  tun haben.
+- Punkt 1 ist eine Lücke in Cowrie selbst und eignet sich wie E-016 als
+  Beitrag ans Cowrie-Projekt.
+
+**Konsequenzen:**
+
+- Die Schritte 7.2 und 7.3 setzen den Patch um, mit Tests für alle vier
+  Punkte. Der Bauplan nennt ihn dort noch nicht.
+- `server/app/events.py` bekommt `cowrie.llm.response` in `KNOWN_EVENTIDS`,
+  dazu eine Migration für die abgeleitete Tabelle.
+- Das Gateway beantwortet Budget- und Limit-Stopps mit eigenem HTTP-Status,
+  damit `http_status` sie zeigt.
+- Ein Rate-Limit je IP-Hash im Gateway (Bauplan, Schritt 7.2) geht nicht:
+  Cowrie schickt die Adresse des Angreifers bewusst nicht mit (`persona.md`).
+  Das übernimmt Cowries Begrenzung je Adresse auf dem Sensor. Soll das Gateway
+  je Sitzung begrenzen oder Kosten Sitzungen zuordnen
+  (`llm_usage.session_id`), muss der Patch die Sitzungs-ID mitschicken, etwa
+  als eigenen Header. Für `method.md` ist das nicht nötig.
+- E-016 hat den Status „ersetzt durch E-041“.
