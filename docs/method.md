@@ -438,6 +438,9 @@ in `docs/decisions.md`.
 - `/lab` zeigt während der Laufzeit Zwischenstände mit Intervallen. Sie sind
   beschreibend. Entschieden wird einmal nach T1.
 - Kein vorzeitiges Ende wegen eines Ergebnisses.
+- Mitschnitte aus B (Schritte 6.3 und 6.4) erscheinen auf `/lab` erst nach
+  T1, Mitschnitte aus A sofort. Sonst bekäme jeder, der die Seite beobachtet,
+  während der Laufzeit eine Vorlage dafür, wie B antwortet (E-042).
 - Ein Abbruch ist nur aus Betriebsgründen möglich (Sicherheit, Missbrauch,
   Kosten). Dann wird bis zum Abbruch ausgewertet und das Ergebnis als
   abgebrochen gekennzeichnet.
@@ -502,6 +505,7 @@ deshalb spätestens 14 Tage nach T1, bei Verlängerung also bis T0 + 84 Tage.
    und das sehen Angreifer an ihren eigenen Servern.
 8. **Erkennbar über `/lab`.** Die öffentliche Liste der letzten Befehle
    verrät den Sensor als Honeypot (E-030). Das betrifft beide Varianten gleich.
+   Antworten von B zeigt `/lab` erst nach T1 (Abschnitt 9.7).
 9. **Ein Sensor, eine Adresse, ein Zeitraum.** Ein Rechenzentrum in Nürnberg,
    nur IPv4, Herbst 2026. Andere Netze und Zeiten können anders aussehen.
 10. **Wechsel am Start.** Quellen aus der Vorperiode, die B bekommen, sehen am
@@ -536,6 +540,6 @@ deshalb spätestens 14 Tage nach T1, bei Verlängerung also bis T0 + 84 Tage.
 
 - `AGENTS.md`: Forschungsfrage und harte Regeln
 - `docs/decisions.md`: E-002, E-004, E-008, E-009, E-014, E-015, E-017, E-022,
-  E-024, E-025, E-030, E-039, E-040, E-041
+  E-024, E-025, E-030, E-039, E-040, E-041, E-042
 - `sensor/persona/persona.md`: Persona und bekannte Unterschiede
 - `docs/campaigns.md`: Kampagnen, Normalisierung und ihre Grenzen
