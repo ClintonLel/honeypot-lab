@@ -3,5 +3,4 @@
 -r requirements.txt
 pytest==9.1.1
 pytest-asyncio==1.4.0
-# starlette nutzt fuer den TestClient inzwischen httpx2
-httpx2==2.13.0
+# httpx2 für Starlettes TestClient steht in requirements.txt (LLM-Gateway).

@@ -67,11 +67,15 @@ _COMMAND = " The command to execute is: "
 
 
 class RequestRejected(Exception):
-    """Die Anfrage passt nicht. ``reason`` ist ein kurzer Code ohne Inhalt."""
+    """Die Anfrage passt nicht. ``reason`` ist ein kurzer Code ohne Inhalt.
 
-    def __init__(self, reason: str) -> None:
+    Bei ``prompt_hash`` trägt sie den beobachteten Hash, für das Log.
+    """
+
+    def __init__(self, reason: str, persona_sha256: str | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.persona_sha256 = persona_sha256
 
 
 class _Message(BaseModel):
@@ -195,7 +199,7 @@ def parse_request(body: bytes, pinned_sha256: str = "") -> CheckedRequest:
 
     digest = persona_sha256(persona_of(messages[0].content))
     if pinned_sha256 and digest != pinned_sha256:
-        raise RequestRejected("prompt_hash")
+        raise RequestRejected("prompt_hash", persona_sha256=digest)
 
     return CheckedRequest(
         messages=[{"role": m.role, "content": m.content} for m in messages],

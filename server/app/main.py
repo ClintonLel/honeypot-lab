@@ -5,7 +5,8 @@ liest niemand beim bloßen Import die Einstellungen, und Tests bauen sich ihre
 eigene App mit eigenen Werten.
 
 Endpunkte: ``GET /health``, ``POST /ingest`` (Schritt 4.1), ``GET /stream``
-und ``GET /stats/*`` (Schritt 5.1). Befehle bekommen beim Ingest ihre
+und ``GET /stats/*`` (Schritt 5.1), ``POST /v1/chat/completions`` als
+LLM-Gateway für cowrie-b (Schritt 7.2). Befehle bekommen beim Ingest ihre
 ATT&CK-Techniken (Schritt 6.1).
 
 Erreichbar ist die App ausschließlich über Caddy auf
@@ -31,6 +32,8 @@ from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory
 from app.enrichment import Enricher
 from app.ingest import router as ingest_router
+from app.llm_gateway import DbLedger, Gateway
+from app.llm_gateway import router as llm_router
 from app.logging import configure_logging
 from app.ratelimit import RateLimiter
 from app.stats import TTLCache
@@ -79,6 +82,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
     app.state.enricher = Enricher(settings.ipinfo_db_path)
+    # Wirft nie. Fehlt etwas, antwortet nur das Gateway mit 503 (E-043).
+    app.state.llm_gateway = Gateway.from_settings(
+        settings, ledger=DbLedger(app.state.session_factory), clock=app.state.clock
+    )
     logger.info(
         "api gestartet",
         extra={"environment": settings.environment, "attack_version": rules.attack_version},
@@ -86,6 +93,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await app.state.llm_gateway.aclose()
         app.state.enricher.close()
         await engine.dispose()
         logger.info("api beendet")
@@ -131,4 +139,5 @@ def create_app() -> FastAPI:
     app.include_router(ingest_router)
     app.include_router(stream_router)
     app.include_router(stats_router)
+    app.include_router(llm_router)
     return app
