@@ -52,7 +52,7 @@ Fehlt pytest, installierst du es einmal mit `python3 -m pip install pytest`.
 
 Übertragen wird per rsync vom Laptop. Auf dem Sensor liegen so keine
 Zugangsdaten zum Repo. Der Sensor steht in `~/.ssh/config` als Host
-`hp-sensor` (195.201.127.108, User `tom`, Port 22022, Schlüssel `hp_sensor`).
+`hp-sensor` (`SENSOR_IP`, User `tom`, Port 22022, Schlüssel `hp_sensor`).
 Mit der nackten IP greift dieser Block nicht, dann fehlen Port und Schlüssel.
 
 Einmalig den Zielordner anlegen:

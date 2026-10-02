@@ -280,3 +280,21 @@ def test_the_persona_stays_under_the_size_the_gateway_was_checked_for():
     prompt = read(SENSOR / "persona/prompt.md")
     rendered = prompt.replace("{ip}", LONGEST_IP).replace("{ip6}", LONGEST_IP6)
     assert len(rendered) <= PERSONA_MAX_CHARS
+
+
+# --- Nur IPv4 ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("service", "port"), [("cowrie-a", 2222), ("cowrie-b", 2322)])
+def test_both_variants_listen_on_ipv4_only(compose, service, port):
+    """Die nftables-Sperre für 2322 steht in `table ip` und gilt nur für IPv4
+    (E-044). Das reicht nur, solange keine Variante auf IPv6 lauscht."""
+    endpoints = compose["services"][service]["environment"]["COWRIE_SSH_LISTEN_ENDPOINTS"]
+    assert endpoints == f"tcp:{port}:interface=0.0.0.0"
+    assert "tcp6" not in endpoints and "::" not in endpoints
+
+
+def test_the_nftables_guard_lives_in_the_ipv4_table():
+    rules = read(SENSOR / "nftables/honeypot.nft")
+    assert "table ip honeypot {" in rules
+    assert "table ip6" not in rules and "table inet" not in rules

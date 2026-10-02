@@ -210,3 +210,41 @@ def test_a_command_without_response_is_counted(client, migrated):
     with migrated.connect() as connection:
         found = counts(connection, START - timedelta(days=1), START + timedelta(days=1))
     assert found["befehle_ohne_aufruf"] == 1
+
+
+# --- python -m app.llm_check ------------------------------------------------------
+
+
+def test_llm_check_prints_only_counts_and_exits_0(client, migrated, capsys):
+    """Der Aufruf aus server/README.md: JSON mit Zählern, kein Befehl, kein Hash."""
+    from app import llm_check
+
+    send(client, a_session())
+    capsys.readouterr()
+    assert llm_check.main([]) == 0
+    out = capsys.readouterr().out
+    result = json.loads(out)
+    assert result == {
+        "aufrufe": 2,
+        "passt": 2,
+        "passt_nicht": 0,
+        "ohne_befehl": 0,
+        "nicht_pruefbar": 0,
+        "befehle_ohne_aufruf": 0,
+        "outcomes": {"local_rate_limit": 1, "ok": 1},
+    }
+    assert out.count("\n") == 1
+    for secret in (FIRST, SOURCE, sha256(FIRST.encode("utf-8")).hexdigest()):
+        assert secret not in out
+
+
+def test_llm_check_counts_only_the_requested_days(client, migrated, capsys):
+    from app import llm_check
+
+    send(client, a_session())
+    capsys.readouterr()
+    # Die Testsitzung liegt am 2026-09-30, also außerhalb des letzten Tages.
+    assert llm_check.main(["--tage", "1"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["aufrufe"] == 0
+    assert result["outcomes"] == {}

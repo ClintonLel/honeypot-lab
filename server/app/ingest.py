@@ -327,7 +327,9 @@ async def ingest(
         # Ab hier existiert die Adresse nirgends mehr: payload ist ohne sie
         # entstanden, gespeichert wird nur der Hash.
         # Ebenso beim Befehl: gespeichert wird nur der HMAC seines SHA-256.
-        digest = event.fields.get("input_sha256")
+        # Der Hash selbst verlässt das Ereignis hier, auch der Stream sieht
+        # ihn nicht.
+        digest = event.fields.pop("input_sha256", None)
         ref = input_ref(digest, key) if digest else None
 
         # Jedes Ereignis in einem eigenen Savepoint: Scheitert eines an der

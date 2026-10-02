@@ -792,7 +792,7 @@ liegt sie unter `/etc/nftables.d/honeypot.nft`, und
 **Konsequenzen:**
 
 - Getestet am 2026-09-17:
-  - Von außen landet `ssh root@195.201.127.108` in Cowrie, mit Honeypot-Host-Key,
+  - Von außen landet `ssh root@SENSOR_IP` in Cowrie, mit Honeypot-Host-Key,
     Persona und `dst_port` 2222 im Log.
   - Port 22022 bleibt erreichbar, Port 2222 ist von außen zu.
   - Nach einem Neustart waren Regel, cowrie-a und Aufräum-Timer nach etwa 30
@@ -999,7 +999,7 @@ konstant. Es gibt keine Rotation. E-009 gilt unverändert weiter.
 - **Eine kaputte Zeile wirft nicht den Stapel weg.** Ungültige Ereignisse
   werden gezählt und mit Grund zurückgemeldet, der Rest wird gespeichert.
 - **Adressen der Beteiligten werden ersetzt, nicht entschärft.** Cowrie
-  schreibt die Quell-IP auch in Freitexte („New connection: 1.2.3.4:59386“).
+  schreibt die Quell-IP auch in Freitexte („New connection: 192.0.2.4:59386“).
   Dort steht künftig `<src>` beziehungsweise `<dst>`. Entschärfen allein
   genügte nicht: `1[.]2[.]3[.]4` ist weiterhin die Adresse.
 - **Fremde Adressen und URLs in Befehlen bleiben**, aber entschärft
@@ -2223,7 +2223,10 @@ Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
    das Gateway-Token aus `/srv/honeypot/secrets-b`.
 8. **Netz**: cowrie-b lauscht wie A auf `0.0.0.0`, Port 2322. Neben der
    Hetzner-Firewall nimmt nftables 2322 nur von `lo` oder nach Umleitung
-   (`ct status dnat`) an und verwirft alles andere.
+   (`ct status dnat`) an und verwirft alles andere. Die Sperre steht in der
+   Tabelle `ip honeypot` und deckt nur IPv4 ab; das genügt, weil A und B
+   nur auf IPv4 lauschen (`tcp:…:interface=0.0.0.0`, kein `tcp6`). Ein
+   Test in `sensor/tests/test_cowrie_b.py` hält das fest.
 9. **Bekannte Unterschiede im Backend**, nicht angeglichen: Befehle auf
    stdin einer Exec-Shell (`ssh host sh < skript`) führt A Zeile für Zeile
    aus und loggt sie, B nicht. Eingaben an Programme, die stdin lesen (`cat`
