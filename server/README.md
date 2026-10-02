@@ -26,12 +26,13 @@ die API über Caddy erreichbar (E-021).
 | `app/llm_request.py`        | Anfragen ans Gateway prüfen: Schema, Grenzen, Herkunft      |
 | `app/llm_limits.py`         | Kosten, Budget, Minutengrenze des Gateways                  |
 | `app/llm_probe.py`          | Rümpfe für Probeaufrufe des Gateways                        |
+| `app/llm_check.py`          | Abgleich der Aufrufe von cowrie-b mit den Befehlen, nur Zähler (Schritt 7.3) |
 | `app/config.py`             | Einstellungen aus Umgebungsvariablen, Secrets als `SecretStr` |
 | `app/db.py`                 | Engine und Sessions (SQLAlchemy 2, psycopg 3, asynchron)    |
-| `app/models.py`             | die sieben Tabellen aus Schritt 3.3                        |
+| `app/models.py`             | die sieben Tabellen aus Schritt 3.3, dazu `llm_responses` (7.3) |
 | `app/hashing.py`            | HMAC-SHA256 der Quell-IPs (E-009, E-022)                   |
 | `app/logging.py`            | JSON-Logs                                                  |
-| `app/migrations/`           | Alembic, `0001_grundschema.py` legt alles an, `0002` ergänzt Kennzahlen der Kampagnen, `0003` zwischengespeicherte Tokens in `llm_usage` |
+| `app/migrations/`           | Alembic, `0001_grundschema.py` legt alles an, `0002` ergänzt Kennzahlen der Kampagnen, `0003` zwischengespeicherte Tokens in `llm_usage`, `0004` Tabelle `llm_responses` und `commands.input_ref` |
 | `worker/main.py`            | Zeitplan und Einzelläufe der Jobs                          |
 | `worker/jobs.py`            | `ipinfo`, `statistik`, `aufraeumen` (Schritt 4.3), `attack` (6.1), `campaigns` (6.2) |
 | `tests/`                    | Tests ohne Datenbank und, mit Marker `db`, mit Datenbank   |
@@ -700,16 +701,19 @@ Ist `LLM_PROMPT_SHA256` gepinnt, antworten die Probeaufrufe mit 400 und
 `"grund": "prompt_hash"` im Log, denn die Probe-Persona ist nicht die von
 cowrie-b. Auch das ist eine brauchbare Prüfung nach dem Pinnen.
 
-### Hinweise für Schritt 7.3
+### Hinweise zu cowrie-b
 
-- **cowrie-b:** `[llm]` mit `host = https://api.tomkaufmann.dev`,
-  `path = /v1/chat/completions` und dem `LLM_GATEWAY_TOKEN` als `api_key`.
-  `model`, `max_tokens` und `temperature` aus `cowrie.cfg` ignoriert das
-  Gateway. `debug` bleibt aus, sonst schreibt Cowrie Prompts und Antworten in
-  sein Log.
-- **Prompt-Hash pinnen:** Nach den ersten Aufrufen von cowrie-b den
-  `prompt_sha256` aus der Logzeile `llm` in `LLM_PROMPT_SHA256` übernehmen,
-  `up -d`, und den Wert in den Start-Eintrag (`method.md` 4.5).
+Umgesetzt in Schritt 7.3, Anleitung in `sensor/README.md`, Abschnitt
+„cowrie-b (Schritt 7.3)“.
+
+- **cowrie-b:** `COWRIE_LLM_HOST=https://api.tomkaufmann.dev` und
+  `COWRIE_LLM_PATH=/v1/chat/completions` in `sensor/docker-compose.yml`, das
+  `LLM_GATEWAY_TOKEN` als Datei unter `/srv/honeypot/secrets-b`. `model`,
+  `max_tokens` und `temperature` von Cowrie ignoriert das Gateway. `debug`
+  bleibt aus, sonst schreibt Cowrie Prompts und Antworten in sein Log.
+- **Prompt-Hash pinnen:** Nach dem Prüfskript von cowrie-b den Wert holen und
+  in `LLM_PROMPT_SHA256` übernehmen, siehe `sensor/README.md`; in den
+  Start-Eintrag (`method.md` 4.5) kommt er zum Start.
 - **Der Hash hängt an der Sensor-IP:** Der Prompt enthält die eigenen
   Adressen des Sensors (`{ip}`, `{ip6}`). Neue Adresse, neuer Hash: neu
   pinnen, sonst antwortet das Gateway mit 400.
@@ -726,6 +730,68 @@ cowrie-b. Auch das ist eine brauchbare Prüfung nach dem Pinnen.
   erschöpft, beides ist ein Ausfall (`method.md` 8). 502 ist der Anbieter
   (in `llm_usage` `upstream_error` oder `upstream_limited`), 504 das
   Zeitlimit.
+
+## cowrie-b am Ingest (Schritt 7.3)
+
+Der Patch für cowrie-b schreibt je Befehl ein Ereignis `cowrie.llm.response`
+(E-041, E-044). `/ingest` nimmt es an, prüft jedes Feld und legt es zusätzlich
+in `llm_responses` ab; die Tabelle bleibt, wenn der Worker die Roh-Events nach
+90 Tagen löscht.
+
+| `outcome` | Bedeutung | `http_status` | in `method.md` |
+|-----------|-----------|---------------|----------------|
+| `ok` | Antwort da, auch leer (`output_chars` 0) | 200 | Behandlung |
+| `rate_limited` | Minutengrenze des Gateways | 429 | Behandlung |
+| `local_rate_limit` | Cowries Begrenzung je Adresse, kein Aufruf | leer | Behandlung |
+| `unavailable` | Gateway aus oder Budget erschöpft | 503 | Ausfall |
+| `upstream_error` | Fehler beim Anbieter | 502 | Ausfall |
+| `timeout` | Zeitlimit des Gateways oder von Cowrie | 504 oder leer | Ausfall |
+| `error` | alles andere | Code oder leer | Ausfall |
+
+Zuordnung: Ein Aufruf gehört zur Zeile in `commands` derselben Sitzung mit
+`sequence = command_index`. Beide Seiten tragen `input_ref`, einen HMAC über
+den SHA-256 des rohen Befehls mit dem `IP_HMAC_KEY` (eigene Domain). Den
+einfachen Hash speichert der Ingest nicht: Mit allen Adressen für `<src>`
+eingesetzt ließe er sich zurückrechnen (E-044). Ein `llm.response` aus
+Variante A wird abgelehnt.
+
+Das Gateway kürzt seine Antworten jetzt auf 16.384 Zeichen und 65.536 Byte
+als JSON, und `MAX_TOTAL_CHARS` liegt bei 163.840. So geht auch die größte
+Anfrage durch, die Cowrie bauen kann (E-044).
+
+### Ausrollen
+
+**Vor** cowrie-b, sonst lehnt `/ingest` die neuen Ereignisse ab und Vector
+verwirft sie (E-027).
+
+1. Übertragen wie unter „Auf den Hauptserver bringen“.
+2. Bauen, Migration 0004, starten:
+
+```bash
+cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml build
+```
+
+```bash
+cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml run --rm api alembic upgrade head
+```
+
+```bash
+cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml up -d
+```
+
+3. Tests im Container wie unter „Tests auf dem Server“. Erwartet: alle grün,
+   nichts übersprungen.
+
+### Abgleich
+
+Gibt nur Zähler aus. Erwartet: `passt` gleich `aufrufe`, `passt_nicht`,
+`ohne_befehl` und `befehle_ohne_aufruf` 0. Ein Wert über 0 bei
+`passt_nicht` oder `ohne_befehl` heißt: In einer Sitzung ist ein
+`command.input` verloren gegangen, die Nummern sind verrutscht.
+
+```bash
+cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml exec -T api python -m app.llm_check --tage 1
+```
 
 ## Hinweise
 

@@ -86,7 +86,10 @@ def digest(text):
 
 def session(sid, commands, at=1, src="127.0.0.1", interactive=False, overrides=None):
     overrides = overrides or {}
-    events = [{"eventid": "cowrie.session.connect", "session": sid, "src_ip": src, "timestamp": stamp(at)}]
+    events = [
+        {"eventid": "cowrie.session.connect", "session": sid, "src_ip": src, "timestamp": stamp(at)},
+        {"eventid": "cowrie.login.success", "session": sid, "timestamp": stamp(at)},
+    ]
     if interactive:
         events.append({"eventid": "cowrie.client.size", "session": sid, "timestamp": stamp(at)})
     for index, command in enumerate(commands, start=1):
@@ -160,7 +163,7 @@ def test_a_response_before_its_command_fails():
 
 
 def test_other_outcomes_fail_unless_expected():
-    events = session("s1", ["uname -a"], overrides={1: {"outcome": "unavailable"}}) + good_log()[3:]
+    events = session("s1", ["uname -a"], overrides={1: {"outcome": "unavailable"}}) + good_log()[4:]
     checks, counts = evaluate(events)
     assert not checks["Outcomes"]
     checks, _ = evaluate(events, expect="unavailable")
@@ -170,7 +173,7 @@ def test_other_outcomes_fail_unless_expected():
 
 
 def test_a_client_that_left_fails():
-    events = session("s1", ["uname -a"], overrides={1: {"client_gone": True}}) + good_log()[3:]
+    events = session("s1", ["uname -a"], overrides={1: {"client_gone": True}}) + good_log()[4:]
     checks, _ = evaluate(events)
     assert not checks["client_gone"]
 
@@ -222,3 +225,10 @@ def test_drive_results_fail(broken):
     else:
         results.pop()
     assert not all(ok for _, ok in check.check_drive(results, check.PLAN, None))
+
+
+def test_a_connection_without_login_is_not_a_test_session():
+    probe = [{"eventid": "cowrie.session.connect", "session": "probe", "src_ip": "127.0.0.1", "timestamp": stamp(1)}]
+    checks, counts = evaluate(probe + good_log())
+    assert counts["sitzungen"] == 4
+    assert all(checks.values()), checks

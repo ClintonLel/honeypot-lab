@@ -158,7 +158,10 @@ def drive(image: str, port: int, plan: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def sessions(work: Path, name: str) -> list[list[dict[str, Any]]]:
-    """Sitzungen in der Reihenfolge ihres Beginns."""
+    """Sitzungen mit Login, in der Reihenfolge ihres Beginns.
+
+    Ohne Login sind es die Verbindungen von wait_for, keine Testsitzungen.
+    """
     path = work / name / LOG
     events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     order: list[str] = []
@@ -168,7 +171,8 @@ def sessions(work: Path, name: str) -> list[list[dict[str, Any]]]:
         if event.get("eventid") == "cowrie.session.connect":
             order.append(sid)
         grouped.setdefault(sid, []).append(event)
-    return [grouped[sid] for sid in order]
+    logged_in = {sid for sid, evs in grouped.items() if any(e.get("eventid") == "cowrie.login.success" for e in evs)}
+    return [grouped[sid] for sid in order if sid in logged_in]
 
 
 def inputs(session_events: list[dict[str, Any]]) -> list[str]:
@@ -201,6 +205,10 @@ def main() -> int:
             "COWRIE_LLM_HOST": f"http://127.0.0.1:{PORTS['gateway']}",
             "COWRIE_LLM_PATH": "/v1/chat/completions",
             "COWRIE_LLM_DEBUG": "false",
+            # Alle Testsitzungen kommen von 127.0.0.1; B bekommt mehr Befehle
+            # als U, mit Cowries Standard von 20 je Minute griffe das Limit
+            # nur in B.
+            "COWRIE_LLM_RATE_LIMIT_REQUESTS": "1000",
         }
         cowrie("a", image_a, work, {
             "COWRIE_HONEYPOT_SENSOR_NAME": "hp-a", "COWRIE_HONEYPOT_BACKEND": "shell",

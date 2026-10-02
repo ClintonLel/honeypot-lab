@@ -201,11 +201,10 @@ Persona.
   Banner. Ein Warnhinweis würde gerade Menschen abschrecken, und ihre
   interaktiven Sitzungen sind für die Forschungsfrage am wertvollsten. Außerdem
   sieht ein leeres Banner vor der Anmeldung weniger von der Persona.
-- **Nach dem Login: die motd aus `etc/motd`.** cowrie-a zeigt sie schon.
-  cowrie-b gibt dagegen fest `Welcome to bld-ci-03` aus. Das ändert der Patch
-  für cowrie-b, der auch echte Downloads ermöglicht und Exec-Befehle loggt
-  (E-041). Kommt dieser Teil des Patches nicht, wird `etc/motd` auf genau
-  `Welcome to bld-ci-03` gesetzt, damit beide Varianten dasselbe zeigen.
+- **Nach dem Login: die motd aus `etc/motd`.** cowrie-a zeigt sie von
+  Haus aus, cowrie-b seit dem Patch statt des fest eingebauten `Welcome to
+  bld-ci-03` (E-041, E-044). Beide schreiben dieselben Bytes; das prüfen die
+  CI (Job `cowrie-b`) und das Prüfskript auf dem Sensor.
 
 ## Prompt-Größe
 
@@ -235,13 +234,17 @@ gehören in die Methodik.
 
 | Stelle                   | cowrie-a (Shell)                            | cowrie-b (LLM)                                         |
 |--------------------------|---------------------------------------------|--------------------------------------------------------|
-| Nach dem Login           | Inhalt von `etc/motd`                       | fest eingebaut: `Welcome to bld-ci-03` (Patch, E-041)  |
+| Nach dem Login           | Inhalt von `etc/motd`                       | gleich, seit dem Patch (E-041, E-044); ohne Patch fest `Welcome to bld-ci-03` |
 | Start-Verzeichnis        | Home des Users                              | `/`                                                    |
 | Verzeichnis im Prompt    | folgt `cd`                                  | bleibt immer `/`, Cowrie setzt es nie neu              |
-| Exec-Befehle im Log      | `cowrie.command.input`                      | ohne Patch kein Ereignis (E-041)                       |
+| Exec-Befehle im Log      | `cowrie.command.input`                      | gleich, seit dem Patch (E-041, E-044); dazu je Befehl `cowrie.llm.response` |
+| Exec mit EOF gleich nach dem Befehl | Ausgabe                          | gleich, seit dem Patch; ohne Patch keine Ausgabe (E-044) |
+| stdin einer Exec-Shell (`ssh host sh < skript`) | jede Zeile ein eigener Befehl, im Log | nur `sh` geht ans Modell, stdin bleibt ungelesen (E-044) |
+| Eingabe an Programme, die stdin lesen (`cat` ohne Datei) | Eingabe des Programms, kein Befehl | jede Zeile ein eigener Befehl (E-044) |
+| Leere Zeile (interaktiv) | neuer Prompt                                | geht ans Modell, das meist leer antwortet              |
 | Unbekannte Befehle im Log | `cowrie.command.failed`                    | kein Ereignis, das Modell antwortet auf alles          |
-| Befehle je Adresse       | unbegrenzt                                  | höchstens 20 je Minute (Cowrie-Standard), darüber leere Ausgabe; ein Ereignis gibt es erst mit dem Patch (E-041) |
-| Länge der Ausgabe        | vollständig                                 | höchstens `max_tokens` (Cowrie-Standard 500 Tokens)     |
+| Befehle je Adresse       | unbegrenzt                                  | höchstens 20 je Minute (Cowrie-Standard), darüber leere Ausgabe und `cowrie.llm.response` mit `local_rate_limit` (E-044) |
+| Länge der Ausgabe        | vollständig                                 | höchstens `LLM_MAX_TOKENS` des Gateways und 16.384 Zeichen (E-043, E-044) |
 | `w`, `who`, `last`       | echte Angreifer-IP                          | Gateway 10.20.0.5                                      |
 | `uptime`, `date`         | echte Laufzeit bzw. Uhrzeit des Containers  | vom Modell geschätzt, Boot am 2026-09-01               |
 | `top`                    | feste Momentaufnahme mit „up 16 days“       | vom Modell, passend zur aktuellen Session              |
@@ -250,7 +253,7 @@ gehören in die Methodik.
 | Befehle ohne Umsetzung in Cowrie (z.B. `lsblk`, `ip`) | `cannot execute binary file: Exec format error` | plausible Ausgabe                   |
 | Eigenheiten von Cowries Befehlen | z.B. `head -4` unbekannt (nur `head -n 4`), `ls -l` zeigt Datum als `2026-09-17 08:41` | Verhalten wie GNU coreutils |
 | `ifconfig`               | nur `eth0` und `lo`                         | `eth0` und `eth1`                                      |
-| `wget`, `curl`           | lädt wirklich herunter und speichert die Datei | simuliert nur, es entsteht keine Datei (Patch, E-041) |
+| `wget`, `curl`           | lädt wirklich herunter und speichert die Datei | simuliert nur, es entsteht keine Datei (Patch folgt mit Schritt 7.3b, V5) |
 | `scp -t`, `tftp`, `ftpget` | nimmt Dateien an bzw. lädt herunter        | simuliert nur                                          |
 | SFTP                     | an, Uploads werden gespeichert (E-017)      | nicht vorhanden, Anfrage wird abgelehnt                |
 | SSH-Weiterleitung (direct-tcpip) | an, wird protokolliert, nicht ausgeführt (E-017) | nicht vorhanden, Kanal wird abgelehnt |
@@ -286,5 +289,6 @@ Stand Cowrie 3.0.14, ausgewertet am 2026-09-17:
       geprüft (2026-09-17)
 - [x] Schritt 2.2 auf dem Sensor: `MemTotal` des echten Sensors ist 3906284 kB,
       0,14 % unter der Persona, keine Anpassung nötig
-- [ ] Phase 7, vor dem Start von B: Patch für cowrie-b (E-041): Exec-Befehle
-      loggen, Antwort-Ereignis je Befehl, motd, echte Downloads
+- [x] Schritt 7.3: Patch für cowrie-b (E-041, E-044): Exec-Befehle loggen,
+      Antwort-Ereignis je Befehl, motd, EOF bei Exec
+- [ ] Schritt 7.3b, vor dem Start von B: echte Downloads in cowrie-b (V5)

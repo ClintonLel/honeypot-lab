@@ -135,8 +135,10 @@ def parse_time(value: str) -> datetime:
 
 def sessions_since(events: list[dict[str, Any]], since: datetime) -> dict[str, list[dict[str, Any]]]:
     """Ereignisse je Sitzung in Logreihenfolge: nur eigene Sitzungen von
-    Loopback, die ab ``since`` begonnen haben."""
+    Loopback mit Login, die ab ``since`` begonnen haben. Ohne Login ist es
+    keine Testsitzung, etwa ein Portscan von lo."""
     started: set[str] = set()
+    logged_in: set[str] = set()
     grouped: dict[str, list[dict[str, Any]]] = {}
     for event in events:
         session = event.get("session")
@@ -148,8 +150,10 @@ def sessions_since(events: list[dict[str, Any]], since: datetime) -> dict[str, l
             and parse_time(event["timestamp"]) >= since
         ):
             started.add(session)
+        if event.get("eventid") == "cowrie.login.success":
+            logged_in.add(session)
         grouped.setdefault(session, []).append(event)
-    return {s: e for s, e in grouped.items() if s in started}
+    return {s: e for s, e in grouped.items() if s in started and s in logged_in}
 
 
 def foreign_sessions(events: list[dict[str, Any]], since: datetime) -> int:

@@ -1,19 +1,23 @@
 # sensor: Honeypots auf dem Sensor
 
-Stand Schritt 2.3: `cowrie-a` mit klassischer Shell, Port 22 wird per nftables
-auf `cowrie-a` umgeleitet. `cowrie-b`, die Zuteilung per Hash und Vector folgen in
-späteren Schritten.
+Stand Schritt 7.3: `cowrie-a` mit klassischer Shell, Port 22 wird per nftables
+auf `cowrie-a` umgeleitet, Vector liefert die Logs beider Varianten. `cowrie-b`
+läuft mit Cowries LLM-Backend und dem Patch aus E-041/E-044, bekommt aber noch
+keinen Verkehr. Die Zuteilung per Hash folgt in Schritt 7.4.
 
 | Pfad im Repo                  | Inhalt                                                           |
 |-------------------------------|------------------------------------------------------------------|
-| `docker-compose.yml`          | Dienst `cowrie-a` (Image gepinnt, Host-Netzwerk, gehärtet)       |
+| `docker-compose.yml`          | Dienste `cowrie-a`, `cowrie-b` und `vector` (gepinnt, gehärtet)   |
+| `cowrie-b/`                   | Image von cowrie-b: Patch, Prüfsummen, Lock, Starter, Tests      |
 | `cowrie/cowrie.cfg`           | gemeinsame Cowrie-Konfiguration für A und B                      |
 | `cowrie/userdb.txt`           | angenommene Logins (`root` und `admin`)                          |
 | `persona/`                    | Persona `bld-ci-03`, siehe `persona/persona.md`                  |
 | `scripts/prepare-host.sh`     | Verzeichnisse und SSH-Host-Keys auf dem Sensor anlegen           |
 | `scripts/build-fs-pickle.sh`  | `fs.pickle` der Persona auf dem Sensor bauen                     |
 | `scripts/cleanup.sh`          | Rohlogs, Mitschnitte und Downloads nach 14 Tagen löschen         |
-| `nftables/honeypot.nft`       | Umleitung von Port 22 auf `cowrie-a` (Schritt 2.3)               |
+| `nftables/honeypot.nft`       | Umleitung von Port 22 auf `cowrie-a` (2.3), Sperre für 2322 (7.3) |
+| `scripts/check-cowrie-b.py`   | Prüfskript für cowrie-b (Schritt 7.3)                             |
+| `scripts/test-nft-guard.sh`   | Funktionstest der nftables-Regeln in Netz-Namespaces (CI)        |
 | `systemd/`                    | Aufräumen (Service und Timer) und Laden der nftables-Regel       |
 | `tests/`                      | Prüfungen für Persona und Konfiguration                          |
 
@@ -25,6 +29,8 @@ root. Laufzeitdaten liegen unter `/srv/honeypot`:
 | `/srv/honeypot/a/var/log/cowrie`  | `cowrie.json` und rotierte Logs von cowrie-a        | 999:999    |
 | `/srv/honeypot/a/var/lib/cowrie/tty` | tty-Mitschnitte                                  | 999:999    |
 | `/srv/honeypot/a/var/lib/cowrie/downloads` | heruntergeladene und hochgeladene Dateien  | 999:999    |
+| `/srv/honeypot/b/var/...`         | dasselbe für cowrie-b                               | 999:999    |
+| `/srv/honeypot/secrets-b`         | Gateway-Token für cowrie-b, eine Datei              | 999:999    |
 | `/srv/honeypot/hostkeys`          | SSH-Host-Keys, gemeinsam für A und B                | 999:999    |
 | `/srv/honeypot/persona/fs.pickle` | Dateisystem der Persona                             | root       |
 
@@ -420,6 +426,175 @@ ssh -i ~/.ssh/hp_sensor -p 22022 tom@SENSOR_IP "systemctl is-active honeypot-nft
 ```
 
 Danach Test 1 bis 3 wiederholen.
+
+## cowrie-b (Schritt 7.3)
+
+cowrie-b ist Cowrie 3.0.14 mit LLM-Backend und dem Patch aus
+`cowrie-b/cowrie-b.patch` (E-041, E-044). Gebaut wird es auf dem Sensor aus
+dem Image von cowrie-a. Der Bau bricht ab, wenn der Patch nicht genau passt.
+B antwortet über das LLM-Gateway auf dem Hauptserver, bekommt aber noch
+**keinen Verkehr**: nftables leitet Port 22 weiter nur auf cowrie-a, Port 2322
+ist in der Hetzner-Firewall zu und per nftables nur von `lo` oder nach
+Umleitung erreichbar. Die Zuteilung ändert erst Schritt 7.4.
+
+Die Befehle laufen in deinem Terminal, `ssh hp-sensor` und `ssh globe` wie
+oben.
+
+### 1. Hauptserver zuerst
+
+Code, Migration 0004 und neues Gateway nach `server/README.md`, Abschnitt
+„cowrie-b am Ingest (Schritt 7.3)“. Sonst lehnt `/ingest` die neuen
+Ereignisse ab, und Vector verwirft sie. Im Gateway `LLM_GATEWAY_ENABLED=true`,
+`LLM_PROMPT_SHA256` noch leer lassen.
+
+### 2. Übertragen und vorbereiten
+
+```bash
+rsync -rlptv --delete --exclude __pycache__ --rsync-path="sudo rsync" sensor/ hp-sensor:/opt/honeypot-lab/sensor/
+```
+
+Legt `/srv/honeypot/secrets-b` an, der Rest bleibt, wie er ist:
+
+```bash
+ssh hp-sensor 'sudo /opt/honeypot-lab/sensor/scripts/prepare-host.sh'
+```
+
+### 3. Gateway-Token
+
+Dasselbe Token wie `LLM_GATEWAY_TOKEN` auf dem Hauptserver. Dort auslesen
+(der Wert gehört in keine Chat-Nachricht und in kein Repo):
+
+```bash
+ssh globe 'sudo grep ^LLM_GATEWAY_TOKEN= /opt/honeypot-lab/.env'
+```
+
+Auf dem Sensor an `/srv/honeypot/.env` anhängen. Der Befehl wartet auf die
+Eingabe: Zeile `LLM_GATEWAY_TOKEN=‹Wert›` einfügen, dann Strg-D:
+
+```bash
+ssh -t hp-sensor 'sudo sh -c "umask 077; cat >> /srv/honeypot/.env" && sudo grep -c ^LLM_GATEWAY_TOKEN= /srv/honeypot/.env'
+```
+
+Erwartet: `1`. Daraus die Datei für cowrie-b, ohne den Wert anzuzeigen:
+
+```bash
+ssh -t hp-sensor 'sudo sh -c ". /srv/honeypot/.env; umask 077; printf %s \"\$LLM_GATEWAY_TOKEN\" > /srv/honeypot/secrets-b/llm_gateway_token" && sudo chown 999:999 /srv/honeypot/secrets-b/llm_gateway_token && sudo chmod 0400 /srv/honeypot/secrets-b/llm_gateway_token && sudo ls -l /srv/honeypot/secrets-b/'
+```
+
+Vector bekommt `/srv/honeypot/secrets` eingebunden, nicht `secrets-b`; das
+Ingest-Token sieht cowrie-b nicht und das Gateway-Token nicht Vector.
+
+### 4. nftables neu laden
+
+Die Regel bekommt die Sperre für 2322. Die Umleitung von Port 22 bleibt:
+
+```bash
+ssh hp-sensor 'sudo nft -c -f /opt/honeypot-lab/sensor/nftables/honeypot.nft && sudo install -m 0644 /opt/honeypot-lab/sensor/nftables/honeypot.nft /etc/nftables.d/honeypot.nft && sudo systemctl reload honeypot-nftables.service && sudo nft list table ip honeypot'
+```
+
+Erwartet: `tcp dport 22 redirect to :2222` und die Kette `input` mit drei
+Regeln für 2322 (`iif "lo" accept`, `ct status dnat accept`, `drop`).
+
+### 5. Bauen und starten
+
+Der Bau lädt `patch` aus snapshot.debian.org und dauert beim ersten Mal ein bis
+zwei Minuten. Er bricht ab, wenn die Dateien im Image nicht die erwarteten
+sind, der Patch nicht ohne Unschärfe passt oder die Pakete vom Lock abweichen:
+
+```bash
+ssh hp-sensor 'cd /opt/honeypot-lab/sensor && sudo docker compose build cowrie-b'
+```
+
+```bash
+ssh hp-sensor 'cd /opt/honeypot-lab/sensor && sudo docker compose up -d cowrie-b vector && sudo docker compose ps'
+```
+
+Startmeldungen. Erwartet: `Ready to accept SSH connections` und keine Zeile
+`cowrie-b startet nicht`:
+
+```bash
+ssh hp-sensor 'cd /opt/honeypot-lab/sensor && sudo docker compose logs --tail 20 cowrie-b'
+```
+
+### 6. Prüfskript
+
+Startet von `127.0.0.1` vier Testsitzungen gegen cowrie-b (Exec, zwei
+parallele Exec-Kanäle, Exec mit EOF, interaktiv mit leerer Zeile) und wertet
+das Log von B aus. Ausgabe nur Zähler und OK/FEHLER:
+
+```bash
+ssh -t hp-sensor 'sudo python3 /opt/honeypot-lab/sensor/scripts/check-cowrie-b.py'
+```
+
+Erwartet: jede Zeile `OK`, am Ende `Ergebnis: OK`. Die Sitzungen kommen von
+`127.0.0.1` und fallen in der Auswertung heraus (`method.md` 8). Zwischen zwei
+Läufen eine Minute warten: Ein Lauf schickt sieben Befehle, Cowries Begrenzung
+liegt bei 20 je Minute und Adresse.
+
+### 7. Prompt-Hash pinnen
+
+Auf dem Hauptserver aus den Logzeilen des Gateways, nur dieses eine Feld.
+Erwartet: genau eine Zeile, denn Exec und interaktiv schicken denselben
+Prompt:
+
+```bash
+ssh globe 'cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml logs --no-log-prefix --since 30m api 2>&1 | grep "\"msg\": \"llm\"" | grep -o "\"prompt_sha256\": \"[0-9a-f]\{64\}\"" | cut -d"\"" -f4 | sort -u'
+```
+
+Den Wert in die `.env` des Hauptservers übernehmen (`<WERT>` ersetzen), dann
+das Gateway neu starten:
+
+```bash
+ssh globe 'sudo sed -i "s/^LLM_PROMPT_SHA256=.*/LLM_PROMPT_SHA256=<WERT>/" /opt/honeypot-lab/.env && cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml up -d api'
+```
+
+Danach Schritt 6 wiederholen, erwartet wieder `Ergebnis: OK`. Steht dort
+`error` statt `ok`, passt der Hash nicht (Gateway-Log: `"grund":
+"prompt_hash"`). In `docs/decisions.md` kommt der Wert erst mit dem
+Start-Eintrag (V9, `method.md` 4.5).
+
+Der Hash hängt an der Persona **und** an den Adressen des Sensors (`{ip}`,
+`{ip6}` im Prompt). Nach jeder Änderung an `persona/prompt.md` oder einer
+neuen Adresse: `up -d cowrie-b`, neu holen, neu pinnen.
+
+### 8. Proben für 503 und 429 (V3)
+
+`method.md` V3 verlangt je ein Ereignis mit 503 und 429. Beide Male das
+Gateway auf dem Hauptserver umstellen, `up -d api`, auf dem Sensor das
+Prüfskript mit `--erwarte` starten und danach zurückstellen:
+
+1. 503: `LLM_GATEWAY_ENABLED=false`, dann
+   `sudo python3 /opt/honeypot-lab/sensor/scripts/check-cowrie-b.py --erwarte unavailable`
+2. 429: `LLM_GATEWAY_ENABLED=true` und `LLM_CALLS_PER_MINUTE=1`, eine Minute
+   warten, dann `… --erwarte rate_limited`. Danach `LLM_CALLS_PER_MINUTE`
+   auf den alten Wert.
+
+Danach Schritt 6 einmal ohne `--erwarte`.
+
+### 9. Abgleich in der Datenbank
+
+Auf dem Hauptserver, nur Zähler, siehe `server/README.md` „Abgleich“:
+
+```bash
+ssh globe 'cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml exec -T api python -m app.llm_check --tage 1'
+```
+
+Erwartet: `passt` gleich `aufrufe`, `passt_nicht`, `ohne_befehl` und
+`befehle_ohne_aufruf` 0, unter `outcomes` die Ausgänge der Läufe.
+
+### Was der Patch ändert
+
+| Stelle | Ohne Patch | Mit Patch |
+|--------|------------|-----------|
+| Exec-Befehl | kein `cowrie.command.input` | wie in A, auch wenn Cowries Begrenzung greift |
+| Antwort | kein Ereignis | je Befehl `cowrie.llm.response` mit `command_index`, `outcome`, `http_status`, `latency_ms`, `output_chars`, `client_gone`, `input_sha256` |
+| Nach dem Login | `Welcome to bld-ci-03` | `etc/motd` wie in A |
+| EOF gleich nach einem Exec-Befehl | Kanal zu, keine Ausgabe | wartet auf die Antwort |
+| Keine Verbindung zum Gateway | intern Status 500 | Status 0, im Ereignis leer |
+| Zeitlimit | keins | 58 s (`COWRIE_LLM_REQUEST_TIMEOUT`) |
+
+Was der Client sieht, ist bei jedem Ausgang des Gateways dasselbe wie ohne
+Patch; das prüft die CI (Job `cowrie-b`).
 
 ## Hinweise
 
