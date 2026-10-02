@@ -41,3 +41,21 @@ def hash_ip(value: str, key: bytes) -> str:
     if not key:
         raise ValueError("IP_HMAC_KEY ist leer")
     return hmac.new(key, normalize_ip(value).encode("ascii"), sha256).hexdigest()
+
+
+# Eigene Domain im selben Schlüssel (E-022): Ein Befehls-Hash kann nie mit
+# einem ip_hash übereinstimmen, und es braucht kein weiteres Secret (E-044).
+_INPUT_DOMAIN = b"cmd-input\x00"
+
+
+def input_ref(input_sha256: str, key: bytes) -> str:
+    """HMAC über den SHA-256 eines rohen Befehls, als Hex.
+
+    Verknüpft ``commands`` mit ``llm_responses``, ohne dass der Hash selbst
+    gespeichert wird. Ein einfacher SHA-256 ließe sich zurückrechnen: Im
+    gespeicherten Befehl steht ``<src>`` statt der Adresse, man setzt alle
+    Adressen ein und vergleicht. Ohne Schlüssel geht das nicht.
+    """
+    if not key:
+        raise ValueError("IP_HMAC_KEY ist leer")
+    return hmac.new(key, _INPUT_DOMAIN + input_sha256.encode("ascii"), sha256).hexdigest()

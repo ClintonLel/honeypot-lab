@@ -81,6 +81,14 @@ MAX_TOKENS_PARAMS = ("max_completion_tokens", "max_tokens")
 FINISH_REASONS = ("stop", "length", "content_filter")
 # Breite der Spalte llm_usage.model.
 MAX_MODEL_CHARS = 64
+# Obergrenze für den content, den das Gateway an Cowrie zurückgibt (E-044).
+# Cowrie schickt ihn im Verlauf als assistant-Nachricht wieder mit, bis zu
+# fünfmal je Anfrage, kodiert mit ensure_ascii (bis 12 Byte je Zeichen). Mit
+# diesen Grenzen passt die größte interaktive Anfrage unter MAX_TOTAL_CHARS,
+# unter MAX_BODY_BYTES und unter Caddys 1 MB. Bei max_tokens 2048 (rund
+# 8.000 Zeichen) greifen sie praktisch nie.
+MAX_REPLY_CHARS = 16_384
+MAX_REPLY_JSON_BYTES = 65_536
 
 
 # --- Konfiguration ---------------------------------------------------------------
@@ -310,6 +318,31 @@ class Outcome:
     upstream_status: int | None = None
     content: str = ""
     finish_reason: str = "stop"
+    # content auf MAX_REPLY_CHARS bzw. MAX_REPLY_JSON_BYTES gekürzt.
+    truncated: bool = False
+
+
+def _escaped_len(char: str) -> int:
+    """Byte eines Zeichens in ``json.dumps`` mit ``ensure_ascii``, wie Cowrie."""
+    return len(json.dumps(char)) - 2
+
+
+def cap_reply(content: str) -> tuple[str, bool]:
+    """Kürzt ``content`` auf ``MAX_REPLY_CHARS`` und ``MAX_REPLY_JSON_BYTES``.
+
+    Sonst könnte das Gateway eine Antwort liefern, die es im nächsten Aufruf
+    derselben Sitzung als zu lang ablehnt. Gibt zurück, ob gekürzt wurde.
+    """
+    if len(content) <= MAX_REPLY_CHARS and len(json.dumps(content)) - 2 <= MAX_REPLY_JSON_BYTES:
+        return content, False
+    budget = MAX_REPLY_JSON_BYTES
+    keep = 0
+    for char in content[:MAX_REPLY_CHARS]:
+        budget -= _escaped_len(char)
+        if budget < 0:
+            break
+        keep += 1
+    return content[:keep], True
 
 
 def _choice(payload: Any) -> tuple[str, str] | None:
@@ -516,6 +549,7 @@ class Gateway:
                 **prompt,
                 "upstream_status": outcome.upstream_status,
                 "geschaetzt": outcome.estimated,
+                "gekuerzt": outcome.truncated,
             },
         )
         if outcome.status == "ok":
@@ -594,8 +628,11 @@ class Gateway:
                 "upstream_error", latency, usage, cost, estimated, upstream_status=upstream_status
             )
         content, finish_reason = choice
+        content, truncated = cap_reply(content)
+        if truncated:
+            finish_reason = "length"
         return Outcome(
-            "ok", latency, usage, cost, estimated, upstream_status, content, finish_reason
+            "ok", latency, usage, cost, estimated, upstream_status, content, finish_reason, truncated
         )
 
     async def _finish(

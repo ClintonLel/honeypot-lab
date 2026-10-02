@@ -40,6 +40,8 @@ KNOWN_EVENTIDS = frozenset(
         "cowrie.login.failed",
         "cowrie.command.input",
         "cowrie.command.failed",
+        # Je Befehl in B: Ausgang des Aufrufs beim Gateway (Patch, E-041, E-044).
+        "cowrie.llm.response",
         "cowrie.log.closed",
         "cowrie.direct-tcpip.request",
         "cowrie.direct-tcpip.data",
@@ -72,12 +74,19 @@ TRANSPORT_KEYS = frozenset({"host", "source_type", "file", "offset", "variant", 
 # Felder mit Adressen der Beteiligten. Sie werden nie gespeichert.
 ADDRESS_KEYS = frozenset({"src_ip", "dst_ip", "peer_ip"})
 
+# Felder, die nur für die Prüfung beim Ingest da sind und nicht in payload
+# landen. Ein einfacher SHA-256 des Rohbefehls ließe sich zurückrechnen, wenn
+# man für <src> alle Adressen einsetzt (E-044). Gespeichert wird nur der
+# HMAC davon (commands.input_ref, llm_responses.input_ref).
+RAW_ONLY_KEYS = frozenset({"input_sha256"})
+
 # Platzhalter für die Adressen der Beteiligten. Cowrie schreibt sie auch in
 # Freitexte ("New connection: 1.2.3.4:59386 (5.6.7.8:2222)"). Entschärfen
 # genügt dort nicht: "1[.]2[.]3[.]4" ist immer noch die Adresse.
 REDACTIONS = {"src_ip": "<src>", "dst_ip": "<dst>", "peer_ip": "<peer>"}
 
 SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 SENSOR_NAME = re.compile(r"^[a-z0-9-]{1,32}$")
 
 # Zeitfenster, in dem ein Ereignis liegen muss. Der Puffer nach vorn fängt
@@ -86,6 +95,27 @@ EARLIEST = datetime(2020, 1, 1, tzinfo=timezone.utc)
 FUTURE_TOLERANCE = timedelta(hours=1)
 
 MAX_BATCH = 500
+
+# Ausgang eines Aufrufs in B und der HTTP-Status, den er haben muss (E-044).
+# None heißt: kein HTTP-Status, weil es keine Antwort gab. Bei "timeout" ohne
+# Status hat Cowries eigenes Zeitlimit gegriffen, bei "error" ohne Status kam
+# keine Verbindung zustande oder es gab einen Fehler vor dem Senden.
+LLM_OUTCOMES: dict[str, frozenset[int | None] | None] = {
+    "ok": frozenset({200}),
+    "rate_limited": frozenset({429}),
+    "unavailable": frozenset({503}),
+    "upstream_error": frozenset({502}),
+    "timeout": frozenset({504, None}),
+    "local_rate_limit": frozenset({None}),
+    # Alles andere, aber keiner der Codes oben.
+    "error": None,
+}
+_MAPPED_STATUS = frozenset({200, 429, 502, 503, 504})
+
+# Grenzen für die Zahlen in cowrie.llm.response. Großzügig, aber endlich.
+MAX_COMMAND_INDEX = 1_000_000
+MAX_LATENCY_MS = 3_600_000
+MAX_OUTPUT_CHARS = 10_000_000
 
 # PostgreSQL speichert kein NUL-Byte, weder in text noch in jsonb. Angreifer
 # schicken es trotzdem, etwa in Benutzernamen. Statt die Zeile zu verlieren,
@@ -239,13 +269,28 @@ def normalize(raw: Any, now: datetime | None = None) -> NormalizedEvent:
     elif eventid == "cowrie.session.connect":
         raise EventRejected("src_ip fehlt bei session.connect")
 
+    llm = llm_response_fields(raw, variant) if eventid == "cowrie.llm.response" else None
+
     # Der Hash entsteht vor dem Entfernen der Adressen: Er soll die Zeile
     # kennzeichnen, wie der Sensor sie geschrieben hat.
     digest = dedup_hash(raw)
 
     pairs = redactions_for(raw)
-    payload = {key: value for key, value in raw.items() if key not in ADDRESS_KEYS and key not in TRANSPORT_KEYS}
+    payload = {
+        key: value
+        for key, value in raw.items()
+        if key not in ADDRESS_KEYS and key not in TRANSPORT_KEYS and key not in RAW_ONLY_KEYS
+    }
     payload = defang_payload(payload, pairs)
+
+    fields = extract_fields(raw, pairs)
+    if eventid == "cowrie.command.input":
+        # Vom rohen input, vor Kürzen, Entfernen der Adressen und Entschärfen.
+        # Nur so passt er zu input_sha256 aus cowrie.llm.response (E-044).
+        fields["input_sha256"] = input_sha256(raw.get("input"))
+    if llm is not None:
+        fields["llm"] = llm
+        fields["input_sha256"] = llm.pop("input_sha256")
 
     return NormalizedEvent(
         dedup_hash=digest,
@@ -256,7 +301,7 @@ def normalize(raw: Any, now: datetime | None = None) -> NormalizedEvent:
         variant=variant,
         payload=payload,
         source_address=source_address,
-        fields=extract_fields(raw, pairs),
+        fields=fields,
     )
 
 
@@ -276,3 +321,86 @@ def extract_fields(raw: dict[str, Any], pairs: list[tuple[str, str]] | None = No
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             out[key] = int(value)
     return out
+
+
+def input_sha256(value: Any) -> str:
+    """SHA-256 des rohen ``input``, wie der Patch in cowrie-b ihn bildet.
+
+    Ein fehlendes ``input`` zählt wie ein leeres, so wie ``add_command`` dann
+    einen leeren Befehl speichert. ``surrogatepass``: JSON kann einzelne
+    Surrogate enthalten, Cowrie selbst erzeugt keine.
+    """
+    if value is None:
+        value = ""
+    elif not isinstance(value, str):
+        value = str(value)
+    return sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _bounded_int(value: Any, low: int, high: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def llm_response_fields(raw: dict[str, Any], variant: str) -> dict[str, Any]:
+    """Prüft ein ``cowrie.llm.response`` streng und gibt seine Felder zurück.
+
+    Die Felder gehen in die Auswertung (method.md V2, H3, Ausfallzeiten). Was
+    nicht genau passt, wird abgelehnt statt gespeichert: Der Sensor gilt als
+    kompromittierbar, und ein Fehler im Patch soll sofort auffallen.
+    """
+    if variant != "b":
+        raise EventRejected("llm.response nur in Variante b")
+
+    def bad() -> EventRejected:
+        return EventRejected("llm.response ungültig")
+
+    index = raw.get("command_index")
+    if not _bounded_int(index, 1, MAX_COMMAND_INDEX):
+        raise bad()
+
+    outcome = raw.get("outcome")
+    if not isinstance(outcome, str) or outcome not in LLM_OUTCOMES:
+        raise bad()
+
+    status = raw.get("http_status")
+    if status is not None and not _bounded_int(status, 100, 599):
+        raise bad()
+    allowed = LLM_OUTCOMES[outcome]
+    if allowed is None:
+        if status in _MAPPED_STATUS:
+            raise bad()
+    elif status not in allowed:
+        raise bad()
+
+    latency = raw.get("latency_ms")
+    if latency is not None and not _bounded_int(latency, 0, MAX_LATENCY_MS):
+        raise bad()
+    # Ohne Aufruf beim Gateway gibt es keine Antwortzeit, mit Antwort immer.
+    if outcome == "local_rate_limit" and latency is not None:
+        raise bad()
+    if status is not None and latency is None:
+        raise bad()
+
+    output_chars = raw.get("output_chars")
+    if not _bounded_int(output_chars, 0, MAX_OUTPUT_CHARS):
+        raise bad()
+    if outcome != "ok" and output_chars != 0:
+        raise bad()
+
+    client_gone = raw.get("client_gone")
+    if not isinstance(client_gone, bool):
+        raise bad()
+
+    digest = raw.get("input_sha256")
+    if not isinstance(digest, str) or not SHA256_HEX.match(digest):
+        raise bad()
+
+    return {
+        "command_index": index,
+        "outcome": outcome,
+        "http_status": status,
+        "latency_ms": latency,
+        "output_chars": output_chars,
+        "client_gone": client_gone,
+        "input_sha256": digest,
+    }

@@ -30,8 +30,8 @@ from app.auth import bearer, rejection_fields, token_matches
 from app.config import Settings
 from app.enrichment import Enricher, Origin
 from app.events import MAX_BATCH, EventRejected, NormalizedEvent, normalize
-from app.hashing import hash_ip
-from app.models import Command, Event, Session
+from app.hashing import hash_ip, input_ref
+from app.models import Command, Event, LlmResponse, Session
 from app.stream import publish_stored
 
 logger = logging.getLogger("lab.ingest")
@@ -185,8 +185,16 @@ async def apply_event(db: AsyncSession, event: NormalizedEvent, session_id: int)
         await db.execute(update(Session).where(Session.id == session_id).values(**changes))
 
 
-async def add_command(db: AsyncSession, event: NormalizedEvent, session_id: int) -> None:
-    """Hängt einen Befehl an die Sitzung und zählt ihn."""
+async def add_command(
+    db: AsyncSession, event: NormalizedEvent, session_id: int, ref: str | None
+) -> None:
+    """Hängt einen Befehl an die Sitzung und zählt ihn.
+
+    ``sequence`` ist die laufende Nummer in Eingangsreihenfolge, ab 1. Sie
+    entspricht ``command_index`` aus ``cowrie.llm.response``, solange kein
+    ``command.input`` der Sitzung abgelehnt wurde; ``input_ref`` deckt eine
+    Verschiebung auf (E-044).
+    """
     text = event.fields.get("input") or ""
     sequence = await db.scalar(
         update(Session)
@@ -211,15 +219,49 @@ async def add_command(db: AsyncSession, event: NormalizedEvent, session_id: int)
             command_hash=sha256(text.encode("utf-8")).hexdigest(),
             # Auf dem gespeicherten, schon entschärften Text (E-037).
             techniques=classify(text),
+            input_ref=ref,
         )
         .on_conflict_do_nothing(constraint="uq_commands_session_sequence")
     )
 
 
+async def add_llm_response(
+    db: AsyncSession, event: NormalizedEvent, session_id: int, ref: str
+) -> None:
+    """Legt die abgeleitete Zeile zu einem ``cowrie.llm.response`` an.
+
+    Ein zweites Ereignis zum selben Befehl wird nicht gespeichert: Zu jedem
+    Befehl gibt es genau einen Aufruf (method.md V2).
+    """
+    llm = event.fields["llm"]
+    await db.execute(
+        insert(LlmResponse)
+        .values(
+            session_id=session_id,
+            command_index=llm["command_index"],
+            occurred_at=event.occurred_at,
+            outcome=llm["outcome"],
+            http_status=llm["http_status"],
+            latency_ms=llm["latency_ms"],
+            output_chars=llm["output_chars"],
+            client_gone=llm["client_gone"],
+            input_ref=ref,
+        )
+        .on_conflict_do_nothing(constraint="uq_llm_responses_session_index")
+    )
+
+
 async def store_event(
-    db: AsyncSession, event: NormalizedEvent, ip_hash: str | None, origin: Origin
+    db: AsyncSession,
+    event: NormalizedEvent,
+    ip_hash: str | None,
+    origin: Origin,
+    ref: str | None = None,
 ) -> bool:
-    """Speichert ein Ereignis. False heißt: war schon da."""
+    """Speichert ein Ereignis. False heißt: war schon da.
+
+    ``ref`` ist der ``input_ref`` von ``command.input`` und ``llm.response``.
+    """
     session_id = await upsert_session(db, event, ip_hash, origin)
 
     inserted = await db.scalar(
@@ -242,7 +284,9 @@ async def store_event(
     if session_id is not None:
         await apply_event(db, event, session_id)
         if event.eventid == "cowrie.command.input":
-            await add_command(db, event, session_id)
+            await add_command(db, event, session_id, ref)
+        elif event.eventid == "cowrie.llm.response" and ref is not None:
+            await add_llm_response(db, event, session_id, ref)
     return True
 
 
@@ -282,6 +326,9 @@ async def ingest(
         ip_hash = hash_ip(event.source_address, key) if event.source_address else None
         # Ab hier existiert die Adresse nirgends mehr: payload ist ohne sie
         # entstanden, gespeichert wird nur der Hash.
+        # Ebenso beim Befehl: gespeichert wird nur der HMAC seines SHA-256.
+        digest = event.fields.get("input_sha256")
+        ref = input_ref(digest, key) if digest else None
 
         # Jedes Ereignis in einem eigenen Savepoint: Scheitert eines an der
         # Datenbank, zählt es als abgelehnt und der Rest des Stapels bleibt
@@ -289,7 +336,7 @@ async def ingest(
         # ganzen Stapel (E-027).
         try:
             async with db.begin_nested():
-                stored = await store_event(db, event, ip_hash, origin)
+                stored = await store_event(db, event, ip_hash, origin, ref)
         except SQLAlchemyError as exc:
             rejected["datenbankfehler"] += 1
             logger.warning(

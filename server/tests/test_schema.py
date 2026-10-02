@@ -33,6 +33,8 @@ EXPECTED_TABLES = {
     "casts",
     "llm_usage",
     "daily_stats",
+    # Schritt 7.3, abgeleitet aus cowrie.llm.response (E-044).
+    "llm_responses",
 }
 
 
