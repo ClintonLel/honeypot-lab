@@ -104,11 +104,17 @@ def test_userdb_accounts_exist_in_persona():
 def test_image_is_pinned_by_tag_and_digest():
     """Tag mit Versionsnummer und Digest, kein :latest (E-010).
 
-    Der Tag darf einen Zusatz tragen, etwa ``0.58.0-alpine``.
+    Der Tag darf einen Zusatz tragen, etwa ``0.58.0-alpine``. Ausnahme: das
+    lokal gebaute Image von cowrie-b. Es hat keinen Digest aus einer
+    Registry, sein Tag nennt Cowrie-Version und Patch-Stand, und seine
+    Basis-Images sind mit Digest gepinnt (test_cowrie_b.py).
     """
     images = re.findall(r"^\s*image:\s*(\S+)\s*$", read(SENSOR / "docker-compose.yml"), flags=re.M)
     assert images
     for image in images:
+        if image.startswith("localhost/"):
+            assert re.fullmatch(r"localhost/[\w./-]+:\d+\.\d+\.\d+-lab\.\d+", image), image
+            continue
         assert re.fullmatch(r"[\w./-]+:\d+\.\d+\.\d+(-[\w.]+)?@sha256:[0-9a-f]{64}", image), image
 
 

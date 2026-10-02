@@ -205,6 +205,10 @@ class Command(Base):
     command_hash: Mapped[str] = mapped_column(String(HASH_LENGTH))
     # ATT&CK-Techniken, wird in Schritt 6.1 gefüllt: ["T1105", "T1082"]
     techniques: Mapped[list[Any]] = mapped_column(server_default=text("'[]'::jsonb"))
+    # HMAC über den SHA-256 des rohen Befehls (app.hashing.input_ref). Prüft,
+    # dass ein Aufruf in llm_responses zu diesem Befehl gehört. Leer bei
+    # Befehlen, die vor Migration 0004 gespeichert wurden (E-044).
+    input_ref: Mapped[str | None] = mapped_column(String(HASH_LENGTH))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -265,6 +269,57 @@ class LlmUsage(Base):
     # upstream_limited (429 des Anbieters, etwa sein hartes Limit), rejected,
     # disabled (E-043)
     status: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# Ausgänge eines Aufrufs in B, wie in app.events.LLM_OUTCOMES (E-044).
+LLM_OUTCOMES = (
+    "ok",
+    "rate_limited",
+    "unavailable",
+    "upstream_error",
+    "timeout",
+    "local_rate_limit",
+    "error",
+)
+
+
+class LlmResponse(Base):
+    """Ein Aufruf in B: ``cowrie.llm.response``, abgeleitet aus dem Roh-Event.
+
+    Bleibt, wenn der Worker die Roh-Events nach 90 Tagen löscht (method.md V2
+    und 10). Gehört zu der Zeile in ``commands`` derselben Sitzung mit
+    ``sequence = command_index``; ``input_ref`` prüft das. Kein Text: weder
+    Befehl noch Antwort.
+    """
+
+    __tablename__ = "llm_responses"
+    __table_args__ = (
+        UniqueConstraint("session_id", "command_index", name="uq_llm_responses_session_index"),
+        CheckConstraint(
+            "outcome IN (" + ", ".join(f"'{o}'" for o in LLM_OUTCOMES) + ")",
+            name="ck_llm_responses_outcome",
+        ),
+        Index("ix_llm_responses_occurred_at", "occurred_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"))
+    # Laufende Nummer des Befehls in seiner Sitzung, ab 1.
+    command_index: Mapped[int] = mapped_column(Integer)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    outcome: Mapped[str] = mapped_column(String(24))
+    # Leer, wenn keine HTTP-Antwort kam.
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    # Leer bei Cowries Begrenzung je Adresse, dann gab es keinen Aufruf.
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    # Länge der Ausgabe an den Client, 0 bei leerer Antwort und bei Fehlern.
+    output_chars: Mapped[int] = mapped_column(Integer)
+    # Der Client war beim Eintreffen der Antwort schon weg (H3).
+    client_gone: Mapped[bool] = mapped_column(Boolean)
+    input_ref: Mapped[str] = mapped_column(String(HASH_LENGTH))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

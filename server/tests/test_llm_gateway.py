@@ -687,3 +687,122 @@ def test_an_unexpected_error_gives_500_without_traceback(llm, caplog, monkeypatc
     assert MARKER not in response.text
     assert MARKER not in all_log_text(caplog)
     assert all(r.exc_info is None for r in caplog.records)
+
+
+# --- Größte Anfrage von Cowrie (E-044) ------------------------------------------
+#
+# Cowrie 3.0.14 kürzt Befehle auf 4.096 Zeichen, schickt höchstens zehn
+# Einträge Verlauf (davon höchstens fünf Antworten) und kodiert mit
+# ensure_ascii. Die Antworten im Verlauf hat das Gateway selbst geliefert,
+# also höchstens so lang, wie cap_reply sie durchlässt. Diese Anfragen dürfen
+# weder an Caddy (1 MB) noch am Gateway scheitern.
+
+from app.llm_gateway import MAX_REPLY_CHARS, MAX_REPLY_JSON_BYTES, cap_reply  # noqa: E402
+from app.llm_request import MAX_BODY_BYTES as GATEWAY_MAX_BODY  # noqa: E402
+from tests.cowrie_llm import MAX_COMMAND_LENGTH, PERSONA_MAX_CHARS  # noqa: E402
+
+# request_body { max_size 1MB } in Caddy (E-021): 1 MB = 1.000.000 Byte.
+CADDY_MAX_BODY = 1_000_000
+# Außerhalb der BMP: 12 Byte je Zeichen mit ensure_ascii.
+WIDE = "\U0001F600"
+
+
+def largest_persona() -> str:
+    """So lang wie erlaubt, mit Zeilenumbrüchen wie die echte (je 2 Byte als JSON)."""
+    line = "x" * 79 + "\n"
+    persona = line * (PERSONA_MAX_CHARS // len(line))
+    return persona + "y" * (PERSONA_MAX_CHARS - len(persona))
+
+
+def largest_command(char: str) -> str:
+    # Ein Angreifer schickt 8.192 Zeichen, Cowrie kürzt vor dem Prompt.
+    return (char * 8192)[:MAX_COMMAND_LENGTH]
+
+
+def largest_interactive(char: str) -> dict:
+    reply, _ = cap_reply(char * 100_000)
+    history: list[str] = []
+    for _ in range(5):
+        history += [f"System: {reply}", f"User: {largest_command(char)}"]
+    return interactive_request(history, template=largest_persona())
+
+
+@pytest.mark.parametrize("char", ["a", WIDE])
+def test_the_largest_exec_request_gets_through(llm, char):
+    client, make = llm
+    upstream, _ = ready(make)
+    body = exec_request(largest_command(char), template=largest_persona())
+    assert len(encode(body)) < CADDY_MAX_BODY
+    response = post(client, body)
+    assert response.status_code == 200
+    assert upstream.calls == 1
+
+
+@pytest.mark.parametrize("char", ["a", WIDE])
+def test_the_largest_interactive_request_gets_through(llm, char):
+    client, make = llm
+    upstream, _ = ready(make)
+    body = largest_interactive(char)
+    assert len(body["messages"]) == 11
+    assert len(encode(body)) < CADDY_MAX_BODY <= GATEWAY_MAX_BODY
+    response = post(client, body)
+    assert response.status_code == 200, response.text
+    assert upstream.calls == 1
+
+
+def test_an_empty_line_in_an_interactive_session_gets_through(llm):
+    """Cowrie schickt auch eine leere Zeile ans Modell (Behandlung, E-044)."""
+    client, make = llm
+    upstream, _ = ready(make)
+    response = post(client, interactive_request(["User: "]))
+    assert response.status_code == 200
+    assert upstream.payload()["messages"][-1] == {"role": "user", "content": ""}
+
+
+def test_an_empty_exec_command_gets_through(llm):
+    """Ohne Befehl nimmt Cowrie den interaktiven Prompt und hängt nichts an."""
+    client, make = llm
+    ready(make)
+    assert post(client, exec_request("")).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_chars"),
+    [
+        ("a" * 20_000, MAX_REPLY_CHARS),
+        (WIDE * 20_000, MAX_REPLY_JSON_BYTES // 12),
+        ("\x00" * 20_000, MAX_REPLY_JSON_BYTES // 6),
+    ],
+)
+def test_a_long_answer_is_cut_so_it_fits_back_into_the_history(llm, caplog, content, expected_chars):
+    client, make = llm
+    ready(make, upstream=Upstream(lambda r: httpx2.Response(200, json=completion(content))))
+    with caplog.at_level(logging.INFO, logger="lab.llm"):
+        response = post(client, exec_request("cat /dev/urandom"))
+    assert response.status_code == 200
+    text = cowrie_reads(200, response.content)
+    assert len(text) == expected_chars
+    assert text == content[:expected_chars]
+    assert response.json()["choices"][0]["finish_reason"] == "length"
+    assert [r.gekuerzt for r in caplog.records if r.getMessage() == "llm"] == [True]
+
+
+def test_a_normal_answer_is_not_cut(llm, caplog):
+    client, make = llm
+    ready(make)
+    with caplog.at_level(logging.INFO, logger="lab.llm"):
+        response = post(client, exec_request("uname -a"))
+    assert cowrie_reads(200, response.content) == ANSWER
+    assert response.json()["choices"][0]["finish_reason"] == "stop"
+    assert [r.gekuerzt for r in caplog.records if r.getMessage() == "llm"] == [False]
+
+
+def test_cap_reply_keeps_short_texts_and_counts_bytes_like_cowrie():
+    import json
+
+    assert cap_reply("hallo") == ("hallo", False)
+    assert cap_reply("a" * MAX_REPLY_CHARS) == ("a" * MAX_REPLY_CHARS, False)
+    cut, truncated = cap_reply("ä" * MAX_REPLY_CHARS)
+    assert truncated
+    assert len(json.dumps(cut)) - 2 <= MAX_REPLY_JSON_BYTES
+    assert len(json.dumps(cut + "ä")) - 2 > MAX_REPLY_JSON_BYTES

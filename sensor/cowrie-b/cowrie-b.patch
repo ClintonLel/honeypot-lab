@@ -1,0 +1,434 @@
+--- a/src/cowrie/llm/llm.py
++++ b/src/cowrie/llm/llm.py
+@@ -9,10 +9,12 @@
+ 
+ import json
+ import os
++import time
+ import urllib.parse
+ from typing import TYPE_CHECKING, Any, cast
+ 
+ from twisted.internet import defer, protocol, reactor
++from twisted.python import failure
+ from twisted.internet.defer import Deferred, inlineCallbacks
+ from twisted.internet.endpoints import HostnameEndpoint
+ from twisted.logger import Logger
+@@ -119,6 +121,43 @@
+         self.d.callback((self.status_code, self.buf))
+ 
+ 
++# Outcome of one call, by HTTP status of the endpoint. Everything else,
++# including no response at all, is "error". 429, 503, 502 and 504 follow the
++# conventions of an LLM gateway in front of the provider: a per-minute limit,
++# the gateway or its budget being unavailable, a provider error, a provider
++# timeout.
++OUTCOME_BY_STATUS = {
++    200: "ok",
++    429: "rate_limited",
++    502: "upstream_error",
++    503: "unavailable",
++    504: "timeout",
++}
++
++
++def classify_status(status_code: int) -> str:
++    """The outcome of a call that got an HTTP response with this status."""
++    return OUTCOME_BY_STATUS.get(status_code, "error")
++
++
++class LLMCall:
++    """What one call to the endpoint did, without any prompt or response text.
++
++    Filled in by LLMClient.get_response when passed in, for the
++    cowrie.llm.response event. http_status stays None when no HTTP response
++    arrived; latency_ms stays None when no request was sent.
++    """
++
++    def __init__(self) -> None:
++        self.outcome: str = "error"
++        self.http_status: int | None = None
++        self.latency_ms: int | None = None
++
++
++class LLMTimeout(Exception):
++    """The endpoint did not answer within [llm] request_timeout."""
++
++
+ class QuietHTTP11ClientFactory(_HTTP11ClientFactory):
+     """
+     Silences factory start/stop log messages.
+@@ -145,6 +184,10 @@
+         self.max_tokens = CowrieConfig.getint("llm", "max_tokens", fallback=500)
+         self.temperature = CowrieConfig.getfloat("llm", "temperature", fallback=0.7)
+         self.debug = CowrieConfig.getboolean("llm", "debug", fallback=False)
++        # Seconds to wait for a complete response; 0 waits indefinitely.
++        self.request_timeout = CowrieConfig.getfloat(
++            "llm", "request_timeout", fallback=0.0
++        )
+ 
+         proxy_url = (
+             os.environ.get("https_proxy")
+@@ -232,9 +275,13 @@
+         return d
+ 
+     def _handle_connection_error(self, err: tw_failure.Failure) -> tuple[int, bytes]:
+-        """Handle connection errors."""
++        """Handle connection errors.
++
++        Status 0: no HTTP response arrived, which must not look like an
++        HTTP 500 from the endpoint.
++        """
+         err.trap(Exception)
+-        return (500, err.getErrorMessage().encode("utf-8"))
++        return (0, err.getErrorMessage().encode("utf-8"))
+ 
+     def _send_request(self, prompt: list[str]) -> Deferred[tuple[int, bytes]]:
+         """Send request to the LLM API."""
+@@ -256,19 +303,69 @@
+         d.addCallbacks(self._handle_response_body, self._handle_connection_error)
+         return d
+ 
++    def _send_with_timeout(self, prompt: list[str]) -> Deferred[tuple[int, bytes]]:
++        """_send_request, failing with LLMTimeout after request_timeout.
++
++        The request is cancelled then; a response arriving later is dropped.
++        """
++        d = self._send_request(prompt)
++        if self.request_timeout <= 0:
++            return d
++
++        result: Deferred[tuple[int, bytes]] = defer.Deferred()
++
++        def expire() -> None:
++            if not result.called:
++                result.errback(failure.Failure(LLMTimeout()))
++                d.cancel()
++
++        timer = reactor.callLater(self.request_timeout, expire)  # type: ignore[attr-defined]
++
++        def settle(value: Any) -> None:
++            if timer.active():
++                timer.cancel()
++            if result.called:
++                return None
++            if isinstance(value, failure.Failure):
++                result.errback(value)
++            else:
++                result.callback(value)
++            return None
++
++        d.addBoth(settle)
++        return result
++
+     @inlineCallbacks
+-    def get_response(self, prompt: list[str]) -> Generator[Deferred[Any], Any, str]:
++    def get_response(
++        self, prompt: list[str], call: LLMCall | None = None
++    ) -> Generator[Deferred[Any], Any, str]:
+         """
+         Get a response from the LLM for the given prompt.
+ 
+         Args:
+             prompt: List of messages. First is system prompt, rest are
+                     conversation history with "User:" and "System:" prefixes.
++            call: Optional; receives outcome, HTTP status and latency.
+ 
+         Returns:
+             The LLM's response text, or empty string on error.
+         """
+-        status_code, response = yield self._send_request(prompt)
++        if call is None:
++            call = LLMCall()
++        started = time.monotonic()
++        try:
++            status_code, response = yield self._send_with_timeout(prompt)
++        except LLMTimeout:
++            call.outcome = "timeout"
++            call.latency_ms = int((time.monotonic() - started) * 1000)
++            self._log.error(
++                "LLM API timeout after {timeout} seconds",
++                timeout=self.request_timeout,
++            )
++            return ""
++        call.latency_ms = int((time.monotonic() - started) * 1000)
++        call.http_status = status_code or None
++        call.outcome = classify_status(status_code)
+ 
+         if status_code != 200:
+             self._log.error(
+@@ -278,6 +375,8 @@
+             )
+             return ""
+ 
++        # Until a usable response is found below.
++        call.outcome = "error"
+         try:
+             response_json = json.loads(response)
+         except json.JSONDecodeError:
+@@ -293,11 +392,13 @@
+         # OpenAI-compatible format
+         if "choices" in response_json and len(response_json["choices"]) > 0:
+             content: str = response_json["choices"][0]["message"]["content"]
++            call.outcome = "ok"
+             return content
+ 
+         # Anthropic Messages API format
+         if "content" in response_json and len(response_json["content"]) > 0:
+             content = response_json["content"][0].get("text", "")
++            call.outcome = "ok"
+             return content
+ 
+         self._log.error("Unexpected LLM response format: {response}", response=response)
+--- a/src/cowrie/llm/protocol.py
++++ b/src/cowrie/llm/protocol.py
+@@ -5,9 +5,11 @@
+ 
+ from __future__ import annotations
+ 
++import os
+ import re
+ import socket
+ import time
++from hashlib import sha256
+ from typing import TYPE_CHECKING
+ 
+ from twisted.conch import recvline
+@@ -19,7 +21,7 @@
+ 
+ from cowrie.core.config import CowrieConfig
+ from cowrie.core.rate_limiter import RateLimiter
+-from cowrie.llm.llm import get_shared_client
++from cowrie.llm.llm import LLMCall, get_shared_client
+ 
+ if TYPE_CHECKING:
+     from cowrie.core.events import EventLog
+@@ -66,6 +68,29 @@
+         return "{" + key + "}"
+ 
+ 
++def input_sha256(text: str) -> str:
++    """SHA-256 of a command line exactly as logged in cowrie.command.input.
++
++    Lets cowrie.llm.response be matched to its command without carrying
++    the command text.
++    """
++    return sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
++
++
++def read_motd() -> bytes:
++    """The message of the day, as the shell backend shows it after login.
++
++    Read from the honeyfs; nothing when it cannot be read, like the shell
++    backend's displayMOTD.
++    """
++    try:
++        path = os.path.join(CowrieConfig.get("honeypot", "contents_path"), "etc", "motd")
++        with open(path, "rb") as motd:
++            return motd.read()
++    except Exception:
++        return b""
++
++
+ def strip_markdown(text: str) -> str:
+     """
+     Remove markdown code block formatting from LLM responses.
+@@ -252,6 +277,77 @@
+             context += f" The command to execute is: {exec_command}"
+         return context
+ 
++    def _next_command_index(self) -> int | None:
++        """Number of the command just logged as cowrie.command.input.
++
++        Counted per connection, starting at 1, shared by all channels of the
++        connection, in the order of the cowrie.command.input events. None
++        for a protocol that was never connected.
++        """
++        if not hasattr(self, "events"):
++            return None
++        transport = self.getProtoTransport()
++        index: int = getattr(transport, "llm_command_index", 0) + 1
++        transport.llm_command_index = index
++        return index
++
++    def _emit_llm_response(
++        self,
++        command_index: int | None,
++        digest: str,
++        outcome: str,
++        http_status: int | None = None,
++        latency_ms: int | None = None,
++        output_chars: int = 0,
++    ) -> None:
++        """Log one cowrie.llm.response for the command with this index.
++
++        No prompt and no response text, only what the call did.
++        """
++        if command_index is None:
++            return
++        self.events.dispatch(
++            "cowrie.llm.response",
++            "LLM response %(outcome)s for command %(command_index)d",
++            command_index=command_index,
++            outcome=outcome,
++            http_status=http_status,
++            latency_ms=latency_ms,
++            output_chars=output_chars,
++            client_gone=self.terminal is None,
++            input_sha256=digest,
++        )
++
++    def _llm_response_logged(
++        self, response: str, command_index: int | None, digest: str, call: LLMCall
++    ) -> str:
++        """Callback: log the outcome, then hand the response on unchanged."""
++        self.llm_pending = False
++        output_chars = len(strip_markdown(response)) if response else 0
++        self._emit_llm_response(
++            command_index,
++            digest,
++            call.outcome,
++            call.http_status,
++            call.latency_ms,
++            output_chars if call.outcome == "ok" else 0,
++        )
++        return response
++
++    def _llm_error_logged(
++        self,
++        err: failure.Failure,
++        command_index: int | None,
++        digest: str,
++        call: LLMCall,
++    ) -> failure.Failure:
++        """Errback: log the call as an error, then hand the failure on."""
++        self.llm_pending = False
++        self._emit_llm_response(
++            command_index, digest, "error", call.http_status, call.latency_ms
++        )
++        return err
++
+     def _process_command_with_llm(self, command: str) -> None:
+         """
+         Process a command by sending it to the LLM and writing the response
+@@ -262,11 +358,16 @@
+             self.llm_client = get_shared_client()
+             self.command_history = []
+ 
++        # lineReceived has just logged this line as cowrie.command.input.
++        command_index = self._next_command_index()
++        digest = input_sha256(command)
++
+         if not llm_rate_limiter.check(getattr(self, "realClientIP", "")):
+             self._log.info(
+                 "LLM rate limit exceeded for {src_ip}, not calling the API",
+                 src_ip=getattr(self, "realClientIP", ""),
+             )
++            self._emit_llm_response(command_index, digest, "local_rate_limit")
+             self._show_prompt()
+             return
+ 
+@@ -282,7 +383,14 @@
+         prompt = [system_context, *self.command_history[-10:]]
+ 
+         # Get response asynchronously
+-        d: defer.Deferred[str] = self.llm_client.get_response(prompt)
++        call = LLMCall()
++        d: defer.Deferred[str] = self.llm_client.get_response(prompt, call)
++        d.addCallbacks(
++            self._llm_response_logged,
++            self._llm_error_logged,
++            callbackArgs=(command_index, digest, call),
++            errbackArgs=(command_index, digest, call),
++        )
+         d.addCallback(self._handle_llm_response)
+         d.addErrback(self._handle_llm_error)
+ 
+@@ -346,6 +454,9 @@
+     # input_data is static buffer for stdin received from remote client
+     input_data = b""
+ 
++    # An LLM request for the exec command is in flight.
++    llm_pending = False
++
+     def __init__(self, avatar, execcmd):
+         """
+         IMPORTANT
+@@ -374,11 +485,22 @@
+         self.llm_client = get_shared_client()
+         self.command_history = []
+ 
++        # Log the command like the shell backend does, before the rate limit:
++        # a limited command was still sent by the client.
++        command_index: int | None = None
++        if hasattr(self, "events"):
++            self.events.dispatch(
++                "cowrie.command.input", "CMD: %(input)s", input=self.execcmd
++            )
++            command_index = self._next_command_index()
++        digest = input_sha256(self.execcmd)
++
+         if not llm_rate_limiter.check(getattr(self, "realClientIP", "")):
+             self._log.info(
+                 "LLM rate limit exceeded for {src_ip}, not calling the API",
+                 src_ip=getattr(self, "realClientIP", ""),
+             )
++            self._emit_llm_response(command_index, digest, "local_rate_limit")
+             ret = failure.Failure(error.ProcessTerminated(exitCode=0))
+             self.terminal.transport.processEnded(ret)
+             return
+@@ -392,7 +514,15 @@
+         prompt = [system_context]
+ 
+         # Get response asynchronously
+-        d: defer.Deferred[str] = self.llm_client.get_response(prompt)
++        call = LLMCall()
++        self.llm_pending = True
++        d: defer.Deferred[str] = self.llm_client.get_response(prompt, call)
++        d.addCallbacks(
++            self._llm_response_logged,
++            self._llm_error_logged,
++            callbackArgs=(command_index, digest, call),
++            errbackArgs=(command_index, digest, call),
++        )
+         d.addCallback(self._handle_exec_response)
+         d.addErrback(self._handle_exec_error)
+ 
+@@ -426,22 +556,34 @@
+     def keystrokeReceived(self, keyID, modifier):
+         self.input_data += keyID
+ 
++    def eofReceived(self) -> None:
++        """
++        The client closed its stdin. The shell backend has already run the
++        command by then; here the response may still be on its way, and its
++        handler ends the process. Ending it now would drop the output for
++        every client that sends EOF right after the exec request (an SSH
++        library running a command without stdin, ssh -n). The session
++        timeout still bounds the wait.
++        """
++        if self.llm_pending:
++            return
++        HoneyPotBaseProtocol.eofReceived(self)
+ 
++
+ class HoneyPotInteractiveProtocol(HoneyPotBaseProtocol, recvline.HistoricRecvLine):
+     def __init__(self, avatar):
+         recvline.HistoricRecvLine.__init__(self)
+         HoneyPotBaseProtocol.__init__(self, avatar)
+ 
+     def connectionMade(self) -> None:
++        # The motd from the honeyfs, first, as the shell backend shows it.
++        self.terminal.write(read_motd())
++
+         HoneyPotBaseProtocol.connectionMade(self)
+         recvline.HistoricRecvLine.connectionMade(self)
+ 
+         self.llm_client = get_shared_client()
+         self.command_history = []
+-
+-        # Show welcome banner
+-        welcome = f"Welcome to {self.hostname}\n"
+-        self.terminal.write(welcome.encode("utf-8"))
+ 
+         self._show_prompt()
+ 

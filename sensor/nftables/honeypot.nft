@@ -14,4 +14,15 @@ table ip honeypot {
     type nat hook prerouting priority -110; policy accept;
     tcp dport 22 redirect to :2222
   }
+
+  # cowrie-b (Schritt 7.3, E-044) nimmt Verbindungen nur an, wenn sie per
+  # Umleitung kamen (ab Schritt 7.4) oder vom Sensor selbst (Pruefskript).
+  # Alles andere auf 2322 wird verworfen, auch wenn die Hetzner-Firewall den
+  # Port einmal oeffnen sollte. Sonst liesse sich die Zuteilung umgehen.
+  chain input {
+    type filter hook input priority filter; policy accept;
+    tcp dport 2322 iif "lo" accept
+    tcp dport 2322 ct status dnat accept
+    tcp dport 2322 drop
+  }
 }

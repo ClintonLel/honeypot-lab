@@ -42,8 +42,10 @@ MAX_USER_CHARS = 8_192
 # Frühere Antworten des Modells, begrenzt durch max_tokens. Großzügig, weil
 # eine Ablehnung die Sitzung für den Angreifer stumm machen würde.
 MAX_ASSISTANT_CHARS = 32_768
-# Realistisch höchstens rund 95.000: System, fünf Befehle, fünf Antworten.
-MAX_TOTAL_CHARS = 131_072
+# System, fünf Befehle, fünf Antworten. Cowrie kürzt Befehle auf 4.096, das
+# Gateway gibt höchstens MAX_REPLY_CHARS (16.384) zurück: Persona bis 32.000
+# plus rund 600 + 5 × 4.096 + 5 × 16.384 ≈ 135.000 (E-044, vorher 131.072).
+MAX_TOTAL_CHARS = 163_840
 # Befehl am Ende des System-Prompts (Exec), wie MAX_USER_CHARS.
 MAX_COMMAND_CHARS = MAX_USER_CHARS
 # Hostname, Benutzer und Verzeichnis im System-Prompt. Cowrie 3.0.14 setzt

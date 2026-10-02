@@ -58,9 +58,10 @@ bei der Übernahme ausformuliert.
 | E-038 | ATT&CK-Regeln erweitert, T1083 enger als bei MITRE          | angenommen                                     |
 | E-039 | Kampagnen über normalisierte Befehlsfolgen, Labels als Daten | angenommen                                     |
 | E-040 | Vorab-Registrierung des Experiments in `docs/method.md`     | angenommen                                     |
-| E-041 | Patch für cowrie-b ist Voraussetzung für den Start          | angenommen                                     |
+| E-041 | Patch für cowrie-b ist Voraussetzung für den Start          | angenommen, Ereignisfelder ersetzt durch E-044 |
 | E-042 | Mitschnitte von B erst nach dem Ende der Laufzeit öffentlich | angenommen                                     |
-| E-043 | LLM-Gateway: Grenzen, Herkunftsprüfung und Kosten           | angenommen                                     |
+| E-043 | LLM-Gateway: Grenzen, Herkunftsprüfung und Kosten           | angenommen, Grenzen ergänzt durch E-044        |
+| E-044 | Patch für cowrie-b: Ereignis, Abgleich, EOF, Image          | angenommen                                     |
 
 ---
 
@@ -791,7 +792,7 @@ liegt sie unter `/etc/nftables.d/honeypot.nft`, und
 **Konsequenzen:**
 
 - Getestet am 2026-09-17:
-  - Von außen landet `ssh root@195.201.127.108` in Cowrie, mit Honeypot-Host-Key,
+  - Von außen landet `ssh root@SENSOR_IP` in Cowrie, mit Honeypot-Host-Key,
     Persona und `dst_port` 2222 im Log.
   - Port 22022 bleibt erreichbar, Port 2222 ist von außen zu.
   - Nach einem Neustart waren Regel, cowrie-a und Aufräum-Timer nach etwa 30
@@ -998,7 +999,7 @@ konstant. Es gibt keine Rotation. E-009 gilt unverändert weiter.
 - **Eine kaputte Zeile wirft nicht den Stapel weg.** Ungültige Ereignisse
   werden gezählt und mit Grund zurückgemeldet, der Rest wird gespeichert.
 - **Adressen der Beteiligten werden ersetzt, nicht entschärft.** Cowrie
-  schreibt die Quell-IP auch in Freitexte („New connection: 1.2.3.4:59386“).
+  schreibt die Quell-IP auch in Freitexte („New connection: 192.0.2.4:59386“).
   Dort steht künftig `<src>` beziehungsweise `<dst>`. Entschärfen allein
   genügte nicht: `1[.]2[.]3[.]4` ist weiterhin die Adresse.
 - **Fremde Adressen und URLs in Befehlen bleiben**, aber entschärft
@@ -1891,7 +1892,7 @@ antwortete 200, Vector hielt das für Erfolg und rückte weiter.
 
 ## E-041: Patch für cowrie-b ist Voraussetzung für den Start
 
-- Status: angenommen
+- Status: angenommen, Ereignisfelder (Punkt 2) ersetzt durch E-044
 - Datum: 2026-10-01
 - Quelle: Schritt 7.1, Prüfung des Quellcodes von Cowrie 3.0.14 und 3.0.15
   durch Claude (Projekt). Ersetzt E-016 und erweitert es.
@@ -1994,7 +1995,7 @@ Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
 
 ## E-043: LLM-Gateway: Grenzen, Herkunftsprüfung und Kosten
 
-- Status: angenommen
+- Status: angenommen, Gesamtgrenze und Kürzung der Antworten ergänzt durch E-044
 - Datum: 2026-10-01
 - Quelle: Schritt 7.2, Plan von Claude Code, vom User mit Änderungen
   freigegeben. Grundlage: Quellcode von Cowrie 3.0.14
@@ -2158,3 +2159,130 @@ Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
   Wiederholungen beim Anbieter, eine Sperre in Caddy auf die Adresse des
   Sensors und eine Liste erlaubter Ziele für den Ausgang. Die letzten beiden
   wären eine Änderung an Website-Demo bzw. eine spätere Härtung.
+
+## E-044: Patch für cowrie-b: Ereignis, Abgleich, EOF, Image
+
+- Status: angenommen
+- Datum: 2026-10-02
+- Quelle: Schritt 7.3, Plan von Claude Code, vom User mit Änderungen
+  freigegeben. Grundlage: Quellcode von Cowrie 3.0.14 (Tag `v3.0.14`,
+  `src/cowrie/llm/`, `src/cowrie/shell/`), End-zu-End-Läufe mit A, B und dem
+  ungepatchten LLM-Backend. Ergänzt E-041 und E-043.
+
+**Entscheidung:**
+
+1. **Ereignis `cowrie.llm.response`** je Befehl in B, statt der Felder aus
+   E-041 Punkt 2: `command_index`, `outcome`, `http_status`, `latency_ms`,
+   `output_chars`, `client_gone`, `input_sha256`. Kein Prompt, keine Antwort.
+
+   | `outcome` | Entsteht | `http_status` |
+   |-----------|----------|---------------|
+   | `ok` | 200 mit lesbarem `content`, auch leer (`output_chars` 0) | 200 |
+   | `rate_limited` | Minutengrenze des Gateways, gehört zur Behandlung | 429 |
+   | `unavailable` | Budgetstopp oder Gateway aus, ein Ausfall | 503 |
+   | `upstream_error` | Fehler beim Anbieter, auch Caddy ohne API | 502 |
+   | `timeout` | Zeitlimit des Gateways oder eigenes Zeitlimit von Cowrie | 504 bzw. leer |
+   | `local_rate_limit` | Cowries Begrenzung je Adresse, kein Aufruf | leer |
+   | `error` | alles andere: 400, 401, 413, 500, 200 mit unlesbarem Rumpf, keine Verbindung | Code bzw. leer |
+
+   Gegenüber E-041 heißt das Feld `outcome` statt `status`. `empty` ist
+   `ok` mit `output_chars` 0, `client_gone` ein eigenes Feld, und
+   `rate_limited` meint jetzt die 429 des Gateways; Cowries Begrenzung heißt
+   `local_rate_limit`. `method.md` ist darauf umgestellt (V2, 7.1, 7.4, 8,
+   K1, K3, R5). H3 rechnet nur mit `ok`, alle Größen je Quelle nehmen jede
+   zugeteilte Quelle (7.4, „Geltungsbereich“).
+2. **`command_index`**: ein Zähler je SSH-Verbindung am Transport, den alle
+   Kanäle teilen, ab 1, vergeben in derselben Reactor-Runde wie das
+   `cowrie.command.input`. B schreibt `command.input` an denselben Stellen
+   wie A: einmal je Exec mit dem ganzen, ungekürzten Befehl, vor der
+   Begrenzung je Adresse, und einmal je Enter, auch bei leerer Zeile, nie
+   für Strg-D. Jede Zeile ruft das Gateway auf, auch eine leere (Behandlung).
+3. **Abgleich über `input_ref`.** Der Ingest bildet aus dem rohen `input`
+   eines `command.input` (A und B) und aus `input_sha256` eines Aufrufs
+   denselben Wert `HMAC-SHA256(IP_HMAC_KEY, "cmd-input\0" + sha256)` und
+   speichert ihn in `commands.input_ref` bzw. `llm_responses.input_ref`.
+   `input_sha256` selbst wird nicht gespeichert, auch nicht im Roh-Event.
+   `python -m app.llm_check` zählt Aufrufe, die an ihrer Stelle passen, nicht
+   passen oder keinen Befehl haben.
+4. **Zeitlimit und Verbindungsfehler**: `[llm] request_timeout` = 58 s,
+   länger als das Gateway (höchstens 55 s), kürzer als Cowries 60 s für
+   Exec. Ohne HTTP-Antwort meldet Cowries Client Status 0 statt einer
+   erfundenen 500. Was der Client sieht, bleibt wie ohne Patch.
+5. **EOF bei Exec**: Ein Exec-Kanal wartet nach dem EOF des Clients auf die
+   laufende Antwort, deren Handler ihn dann beendet; höchstens bis zum
+   Zeitlimit.
+6. **Gateway**: Es kürzt den zurückgegebenen `content` auf 16.384 Zeichen
+   und 65.536 Byte als JSON mit `ensure_ascii` (`finish_reason` `length`,
+   Logzeile `gekuerzt`). `MAX_TOTAL_CHARS` steigt von 131.072 auf 163.840.
+7. **Image**: Basis ist das Image von A (Tag und Digest wie in Compose),
+   dazu die zwei gepatchten Dateien. Der Bau prüft die Originaldateien per
+   SHA-256, wendet den Patch mit GNU patch `--fuzz=0` an und vergleicht die
+   installierten Pakete mit `requirements.lock` (58 Pakete). Das Image heißt
+   `localhost/honeypot-lab/cowrie-b:3.0.14-lab.1`, `pull_policy: build`.
+   `lab/launch.py` setzt beide System-Prompts aus derselben `prompt.md` und
+   das Gateway-Token aus `/srv/honeypot/secrets-b`.
+8. **Netz**: cowrie-b lauscht wie A auf `0.0.0.0`, Port 2322. Neben der
+   Hetzner-Firewall nimmt nftables 2322 nur von `lo` oder nach Umleitung
+   (`ct status dnat`) an und verwirft alles andere. Die Sperre steht in der
+   Tabelle `ip honeypot` und deckt nur IPv4 ab; das genügt, weil A und B
+   nur auf IPv4 lauschen (`tcp:…:interface=0.0.0.0`, kein `tcp6`). Ein
+   Test in `sensor/tests/test_cowrie_b.py` hält das fest.
+9. **Bekannte Unterschiede im Backend**, nicht angeglichen: Befehle auf
+   stdin einer Exec-Shell (`ssh host sh < skript`) führt A Zeile für Zeile
+   aus und loggt sie, B nicht. Eingaben an Programme, die stdin lesen (`cat`
+   ohne Datei), sind in A kein Befehl, in B schon.
+10. **V5** (echte Downloads) kommt als eigener Schritt 7.3b vor dem Start.
+
+**Begründung:**
+
+- Die Namen aus 7.2 trennen auf dem Sensor, was `method.md` trennen muss:
+  Ausfall (`unavailable`, `upstream_error`, `timeout`, `error`) und
+  Behandlung (`rate_limited`, `local_rate_limit`). Mit dem alten `status`
+  stand `rate_limited` für Cowries Limit und `error` für alles, was die
+  Ausfallregel erst über `http_status` wieder aufteilen musste.
+- `commands.sequence` entsteht am Server in Eingangsreihenfolge. Wird ein
+  `command.input` abgelehnt (Prüfung, Datenbankfehler), rutschen alle
+  späteren Nummern der Sitzung. Ohne Abgleich fiele das nicht auf.
+- Warum nicht `sha256(commands.command)`: Der gespeicherte Befehl ist
+  gekürzt, die Adressen der Beteiligten sind durch `<src>`/`<dst>` ersetzt,
+  und er ist entschärft; bei jeder URL oder IP passte der Hash nie. Und ein
+  einfacher SHA-256 ließe sich zurückrechnen: Man setzt für `<src>` alle
+  IPv4-Adressen ein und vergleicht. Das wäre die Quell-IP (E-009). Der HMAC
+  braucht den Schlüssel; der vorhandene genügt, mit eigener Domain.
+- Status 0: Eine erfundene 500 wäre in `http_status` nicht von einer echten
+  500 des Gateways zu unterscheiden.
+- EOF: Gos `x/crypto/ssh` schickt bei `session.Run()` ohne Stdin sofort EOF,
+  ebenso `ssh -n`. Cowries LLM-Backend beendete den Kanal dann, bevor die
+  Antwort da war: Diese Clients sahen von B nie eine Ausgabe, von A schon.
+  Das hat nichts mit dem Modell zu tun, wie motd und Downloads in E-041.
+  Ohne die Änderung wäre H3 von EOF-Clients bestimmt, nicht von der
+  Antwortzeit.
+- Gateway: Die größte Anfrage, die Cowrie bauen kann (Persona bis 32.000
+  Zeichen, fünf Befehle à 4.096, fünf Antworten), hatte 134.885 Zeichen und
+  passte nicht unter 131.072; das Gateway hätte sie mit 400 abgelehnt. Ohne
+  Kürzung konnte es außerdem Antworten liefern, die es im nächsten Aufruf
+  selbst ablehnt oder die den Rumpf über Caddys 1 MB treiben. Mit Kürzung
+  liegt der schlimmste Fall bei 134.885 Zeichen und 606.772 Byte (Zeichen
+  außerhalb der BMP, 12 Byte je Zeichen). Bei `LLM_MAX_TOKENS` 2.048 greift
+  die Kürzung praktisch nie.
+- Image von A als Basis statt eines eigenen Builds aus den Quellen:
+  `method.md` 4.1 verlangt dasselbe Image plus Patch. Das Lock macht den
+  Stand lesbar und prüfbar, die Bits sichert der Digest.
+- `localhost/` und `pull_policy: build`: Ein gleichnamiges Image auf Docker
+  Hub könnte sonst bei `docker compose pull` das eigene ersetzen.
+- Die Unterschiede in Punkt 9 nachzubilden hieße, B Programme oder eine
+  zweite Shell beizubringen. Das wäre eine Änderung der Behandlung.
+
+**Konsequenzen:**
+
+- Server und Migration 0004 gehen vor cowrie-b live, sonst lehnt `/ingest`
+  die neuen Ereignisse ab und Vector verwirft sie (E-027).
+- Für den Start-Eintrag (V9, `method.md` 4.5) offen: `LLM_PROMPT_SHA256`
+  (nach dem Prüfskript aus dem Log des Gateways, `sensor/README.md`),
+  `rate_limit_requests` und `rate_limit_window`, `request_timeout`, die ID
+  des gebauten Images von cowrie-b.
+- Ändert sich das Basis-Image, ändern sich `upstream.sha256`, der Patch und
+  das Lock mit. Der Bau scheitert sonst, und das ist gewollt.
+- `cowrie-b.patch` eignet sich wie E-016 als Beitrag ans Cowrie-Projekt:
+  Exec-Logging, Antwort-Ereignis, motd, Status 0 und EOF sind Lücken in
+  Cowrie selbst.

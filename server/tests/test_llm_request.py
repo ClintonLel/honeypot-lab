@@ -291,8 +291,12 @@ def test_a_system_prompt_that_is_too_long_is_rejected():
 
 
 def test_too_much_text_in_total_is_rejected():
+    # 40.000 + 4 × 32.000 + 4 > MAX_TOTAL_CHARS (163.840), jede Nachricht für
+    # sich erlaubt.
     body = interactive_request(["User: x"], template="p" * 40_000)
     body["messages"][1:] = [
+        {"role": "assistant", "content": "a" * 32_000},
+        {"role": "user", "content": "u"},
         {"role": "assistant", "content": "a" * 32_000},
         {"role": "user", "content": "u"},
         {"role": "assistant", "content": "a" * 32_000},

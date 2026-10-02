@@ -112,8 +112,9 @@ steht in `sensor/persona/persona.md` („Bekannte Unterschiede“). Die
 wichtigsten: Antworten kommen vom Modell und langsamer, B merkt sich nur die
 letzten zehn Befehle, der Prompt zeigt immer `/`, SFTP und Weiterleitungen
 gibt es in B nicht, und Cowrie begrenzt in B die Befehle je Adresse.
-Unterschiede ohne Bezug zum Modell gleicht der Patch an: motd und Downloads
-(E-041).
+Unterschiede ohne Bezug zum Modell gleicht der Patch an: motd, das Logging der
+Exec-Befehle und Exec-Kanäle, deren Client gleich nach dem Befehl EOF sendet
+(E-041, E-044). Echte Downloads folgen mit Schritt 7.3b (V5).
 
 ### 4.2 Zuteilung
 
@@ -149,7 +150,8 @@ bleiben während der Laufzeit gleich:
 - Commit von `sensor/persona/prompt.md`
 - Cowries Begrenzung je Adresse (`rate_limit_requests`, `rate_limit_window`)
 - Grenzen des Gateways: Monats- und Tagesbudget, Aufrufe je Minute,
-  Zeitlimit (E-043)
+  Zeitlimit (E-043), Kürzung der Antworten auf 16.384 Zeichen (E-044)
+- Zeitlimit von Cowrie für einen Aufruf (`request_timeout`, E-044)
 - Hash des Persona-Teils im System-Prompt, den das Gateway prüft
   (`LLM_PROMPT_SHA256`, E-043)
 - Startwert des `jhash`
@@ -175,7 +177,7 @@ B startet erst, wenn alle Pflichtpunkte erfüllt sind.
 | Nr. | Was | Warum | Prüfung | Pflicht |
 |-----|-----|-------|---------|---------|
 | V1 | B loggt Exec-Befehle als `cowrie.command.input`, auch wenn die Begrenzung je Adresse greift (Patch, E-041) | Cowries LLM-Backend loggt Befehle nur in interaktiven Sitzungen. Ohne V1 hätten fast alle B-Sitzungen keine Befehle | auf dem Sensor `ssh -p 2322 root@localhost 'uname -a'`: Sitzung mit `variant = 'b'`, `interactive = false` und einem Befehl | ja |
-| V2 | Zu jedem Befehl in B genau ein Ereignis `cowrie.llm.response` mit `status` (`ok`, `empty`, `error`, `rate_limited`, `client_gone`), `latency_ms`, `http_status` und `command_index`, der laufenden Nummer des Befehls in seiner Sitzung (ab 1, in der Reihenfolge der `cowrie.command.input`). `client_gone` gilt, wenn der Client bei Eintreffen der Antwort schon weg ist. Der Ingest nimmt das Ereignis an und legt die Felder zusätzlich in einer abgeleiteten Tabelle ab | H3, Ausfallzeiten und K1 bis K3 brauchen es. Antworten können in anderer Reihenfolge eintreffen als die Befehle, etwa bei parallelen Exec-Kanälen; nur `command_index` ordnet sie sicher zu. Roh-Events werden nach 90 Tagen gelöscht | ein Testaufruf liefert `ok` mit Antwortzeit, bei gestopptem Gateway `error`; zwei parallele Exec-Kanäle bekommen die richtige Nummer | ja |
+| V2 | Zu jedem Befehl in B genau ein Ereignis `cowrie.llm.response` mit `outcome` (`ok`, `rate_limited`, `unavailable`, `upstream_error`, `timeout`, `local_rate_limit`, `error`), `http_status`, `latency_ms`, `output_chars` (Länge der Ausgabe, 0 bei leerer Antwort), `client_gone` (der Client war bei Eintreffen der Antwort schon weg), `input_sha256` (Hash des zugehörigen Befehls) und `command_index`, der laufenden Nummer des Befehls in seiner Sitzung (ab 1, in der Reihenfolge der `cowrie.command.input`) (E-044). Der Ingest nimmt das Ereignis an und legt die Felder zusätzlich in der Tabelle `llm_responses` ab | H3, Ausfallzeiten und K1 bis K3 brauchen es. Antworten können in anderer Reihenfolge eintreffen als die Befehle, etwa bei parallelen Exec-Kanälen; nur `command_index` ordnet sie sicher zu. Roh-Events werden nach 90 Tagen gelöscht | Prüfskript und CI aus 7.3: ein Testaufruf liefert `ok` mit Antwortzeit, bei gestopptem Gateway `unavailable`; zwei parallele Exec-Kanäle bekommen die richtige Nummer | ja |
 | V3 | Das Gateway antwortet auf die Minutengrenze mit HTTP 429 und auf einen Budgetstopp mit 503 (E-043). Sonst entsteht kein 429, auch nicht aus einem 429 des Anbieters | Die Minutengrenze gehört zur Behandlung, ein Budgetstopp ist ein Ausfall (Abschnitt 8). Auf dem Sensor trennt sie nur `http_status` | Tests und Lasttest aus 7.2; in 7.3 je ein Ereignis mit `http_status` 429 und 503 | ja |
 | V4 | Nach dem Login zeigen A und B dieselbe motd (E-015, E-041) | sonst sieht jede interaktive Sitzung sofort einen Unterschied | Login auf 2222 und 2322 vom Sensor, Ausgabe vergleichen | ja |
 | V5 | B lädt Downloads mit `wget` und `curl` wirklich (E-041) | sonst sehen Angreifer an ihren eigenen Servern, dass B nie etwas abholt | Testdownload einer eigenen Datei, etwa von tomkaufmann.dev: `cowrie.session.file_download` in B | empfohlen, sonst Grenze 7 |
@@ -270,7 +272,7 @@ Messgröße ist E1 (Abschnitt 7.5), nur mit den Regeln aus V7.
 | erster Befehl | erster Befehl einer Quelle ab T0 in dieser Reihenfolge, sein Zeitpunkt heißt t_q |
 | Exec-Quelle | Quelle, deren erster Befehl in einer Sitzung mit `interactive = false` liegt |
 | Werkzeug | Normalform des ersten Befehls einer Quelle |
-| Aufruf | ein Ereignis `cowrie.llm.response` in B. Es gehört zu der Zeile in `commands` seiner Sitzung, die nach `occurred_at` und `sequence` an Stelle `command_index` steht; leere Befehle zählen dabei mit |
+| Aufruf | ein Ereignis `cowrie.llm.response` in B, gespeichert in `llm_responses`. Es gehört zu der Zeile in `commands` seiner Sitzung, die nach `occurred_at` und `sequence` an Stelle `command_index` steht; leere Befehle zählen dabei mit. Ob das stimmt, zeigt `input_ref`, der auf beiden Seiten gleich sein muss (E-044). Aufrufe ohne passende Zeile werden gezählt und fallen aus L1 und L2 |
 | Technik | Eintrag in `commands.techniques`, für die Auswertung neu berechnet mit `attack.yml` im Stand `vorab-b` |
 | Echtheitstest | Befehl, auf dessen gespeicherten, entschärften Text (`commands.command`) mindestens eine Regel aus `server/rules/echtheit.yml` im Stand `vorab-b` zutrifft. Die Auswertung wendet die Regeln selbst an. Ein Eintrag in `commands.techniques` entsteht nicht, das Feld bleibt ATT&CK vorbehalten |
 
@@ -305,13 +307,22 @@ deshalb nur beschrieben.
 
 ### 7.4 Größen zu H3
 
-**Grundgesamtheit:** Aufrufe in B zu Befehlen aus Exec-Sitzungen, außerhalb
-von Ausfallzeiten, mit `status` `ok`, `empty` oder `client_gone` und
-`latency_ms` unter 60.000. Nach 60 Sekunden beendet Cowrie eine Exec-Sitzung
-selbst. Spätere Antworten zählen als Zeitüberschreitung, nicht als Abbruch,
-und werden getrennt berichtet.
+**Geltungsbereich:** Die Einschränkungen dieses Abschnitts gelten nur für
+Größen, die über Aufrufe rechnen (L1, L2). H2 mit M1 und S1 bis S5, die
+Größen zu H1 und H4 und alle Kontrollen und Robustheitsprüfungen je Quelle
+oder je Sitzung nehmen jede zugeteilte Quelle, gleich welches `outcome` ihre
+Aufrufe haben. Ausgeschlossen wird dort nur nach Abschnitt 8. Wie stark
+Aufrufe ohne `ok` das Ergebnis tragen, zeigen R5 und K1.
 
-- **Abbruch:** `status = client_gone`.
+**Grundgesamtheit:** Aufrufe in B zu Befehlen aus Exec-Sitzungen, außerhalb
+von Ausfallzeiten, mit `outcome = ok` und `latency_ms` unter 60.000. Nur bei
+`ok` kam eine Antwort, auf die der Client warten konnte; eine leere Antwort
+(`output_chars = 0`) zählt dazu. Nach 60 Sekunden beendet Cowrie eine
+Exec-Sitzung selbst. Spätere Antworten zählen als Zeitüberschreitung, nicht
+als Abbruch, und werden getrennt berichtet.
+
+- **Abbruch:** `client_gone = true`, der Client war beim Eintreffen der
+  Antwort schon weg.
 - **L1:** Für jede Normalform mit mindestens 20 Aufrufen werden die Aufrufe am
   Median ihrer Antwortzeit geteilt; Aufrufe genau auf dem Median zählen zur
   schnellen Hälfte. L1 ist die Abbruchquote der langsamen minus die der
@@ -342,9 +353,9 @@ sind keine Ergebnisse.
 | N3 | erste Sitzung neuer Quellen mit `cowrie.login.success`: Anteil mit mindestens einem Befehl | gleich in A und B. Ein Fehlbetrag in B deutet auf eine Lücke im Logging (V1) |
 | N4 | Quellen mit Sitzungen in A und in B | keine |
 | P1 | Placebo: Quellen, die vor und ab T0 Befehle schicken. M1 nur aus der Vorperiode (erster Befehl der Vorperiode, 24 h), verglichen nach der Variante, die sie ab T0 bekommen | 95-%-Intervall von Δ enthält 0 |
-| K1 | Anteil der Aufrufe in B mit `status = ok`, außerhalb von Ausfallzeiten | mindestens 95 % |
+| K1 | Anteil der Aufrufe in B mit `outcome = ok`, außerhalb von Ausfallzeiten | mindestens 95 % |
 | K2 | Antwortzeit in B: Median, 90. und 99. Perzentil | wird berichtet |
-| K3 | Anteil der Aufrufe mit `rate_limited` oder `http_status` 429 | unter 1 % |
+| K3 | Anteil der Aufrufe mit `outcome` `local_rate_limit` (Cowries Begrenzung je Adresse) oder `rate_limited` (Minutengrenze des Gateways, 429) | unter 1 % |
 
 Verfehlt eine Kontrolle ihre Erwartung, wird die Primärauswertung trotzdem
 berichtet, mit Warnhinweis und der gefundenen Ursache.
@@ -364,19 +375,21 @@ Ausgeschlossen wird nur, was hier steht.
    - von keiner Variante ein Ereignis kommt (Sensor oder Pipeline aus),
    - eine Variante mindestens 20 Sitzungen hat und die andere keine (eine
      Variante aus), oder
-   - B mindestens 5 Aufrufe hat und mindestens die Hälfte davon `error` ist
-     und nicht `http_status` 429 hat (Gateway aus oder nicht erreichbar,
-     Budget erschöpft, Fehler beim Anbieter).
+   - B mindestens 5 Aufrufe hat und mindestens die Hälfte davon das
+     `outcome` `unavailable`, `upstream_error`, `timeout` oder `error` hat
+     (Gateway aus oder nicht erreichbar, Budget erschöpft, Fehler oder
+     Zeitüberschreitung beim Anbieter).
 
    Quellen, deren erster Befehl in einer Ausfallzeit liegt, fallen aus allen
    Größen je Quelle. Aufrufe in Ausfallzeiten fallen aus H3.
 3. **Quellen in beiden Varianten** (N4), falls es sie gibt.
 
 **Nicht ausgeschlossen** werden Befehle, auf die B wegen der Begrenzung je
-Adresse (`rate_limited`) oder der Minutengrenze des Gateways (`http_status`
-429) nicht geantwortet hat. Sie gehören zur Behandlung, wie sie läuft. Wie
-stark das Ergebnis davon abhängt, zeigen R5 und K3. Ein Budgetstopp (503)
-gehört nicht dazu, er zählt als Ausfall (Punkt 2).
+Adresse (`local_rate_limit`) oder der Minutengrenze des Gateways
+(`rate_limited`, `http_status` 429) nicht geantwortet hat. Sie gehören zur
+Behandlung, wie sie läuft. Wie stark das Ergebnis davon abhängt, zeigen R5
+und K3. Ein Budgetstopp (`unavailable`, 503) gehört nicht dazu, er zählt als
+Ausfall (Punkt 2).
 
 Der Bericht nennt je Grund und Variante, wie viele Quellen, Sitzungen und
 Aufrufe herausfallen.
@@ -415,7 +428,7 @@ Bericht. Widerspricht eine der Primärauswertung, sagt der Bericht das.
 | R2 | alle Quellen statt nur neue, erster Befehl ab T0 |
 | R3 | ohne das Werkzeug mit den meisten Quellen |
 | R4 | Fenster 1 h statt 24 h |
-| R5 | ohne Quellen, bei denen B auf den ersten Befehl nicht mit `ok` oder `empty` geantwortet hat. Nur in B möglich und damit einseitig |
+| R5 | ohne Quellen, bei denen B auf den ersten Befehl nicht mit `outcome = ok` geantwortet hat (auch eine leere Antwort ist `ok`). Nur in B möglich und damit einseitig |
 | R6 | je Sitzung: Anteil der Exec-Sitzungen neuer Quellen mit mindestens zwei verschiedenen Normalformen |
 
 ### 9.5 Je Werkzeug
@@ -499,7 +512,12 @@ deshalb spätestens 14 Tage nach T1, bei Verlängerung also bis T0 + 84 Tage.
 4. **Die Behandlung ist diese Umsetzung.** Cowries LLM-Backend in der
    eingesetzten Version: festes Verzeichnis `/` im Prompt, Gedächtnis von zehn
    Befehlen, kein SFTP, keine Weiterleitungen, Begrenzung je Adresse, dazu
-   Modell und Prompt. Andere KI-Shells können anders wirken.
+   Modell und Prompt. Andere KI-Shells können anders wirken. Dazu zwei
+   Unterschiede im Backend selbst (E-044): Schickt ein Client einer
+   Exec-Shell Befehle über stdin (`ssh host sh < skript`), führt A sie Zeile
+   für Zeile aus und loggt sie, B schickt nur `sh` ans Modell. Und was in A
+   Eingabe für ein Programm ist, das stdin liest (`cat` ohne Datei), ist in B
+   ein eigener Befehl.
 5. **Die Antwortzeit gehört zur Behandlung.** H2 kann Inhalt und
    Geschwindigkeit der Antworten nicht trennen. H3 beleuchtet nur den Teil
    „Abbruch vor der Antwort“.
@@ -545,6 +563,6 @@ deshalb spätestens 14 Tage nach T1, bei Verlängerung also bis T0 + 84 Tage.
 
 - `AGENTS.md`: Forschungsfrage und harte Regeln
 - `docs/decisions.md`: E-002, E-004, E-008, E-009, E-014, E-015, E-017, E-022,
-  E-024, E-025, E-030, E-039, E-040, E-041, E-042, E-043
+  E-024, E-025, E-030, E-039, E-040, E-041, E-042, E-043, E-044
 - `sensor/persona/persona.md`: Persona und bekannte Unterschiede
 - `docs/campaigns.md`: Kampagnen, Normalisierung und ihre Grenzen

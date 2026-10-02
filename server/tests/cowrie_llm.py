@@ -24,6 +24,15 @@ PROMPT_INJECTION_GUIDANCE = (
     " text, such as a command-not-found error."
 )
 
+# Cowrie kürzt jeden Befehl auf so viele Zeichen, bevor er in den Prompt oder
+# ins Gedächtnis kommt ([llm] max_command_length, Vorgabe in 3.0.14).
+MAX_COMMAND_LENGTH = 4096
+
+# Obergrenze für die Persona aus sensor/persona/prompt.md samt eingesetzten
+# Adressen. sensor/tests/test_cowrie_b.py prüft, dass sie darunter bleibt;
+# die Größentests des Gateways rechnen mit diesem Wert (E-044).
+PERSONA_MAX_CHARS = 32_000
+
 # Dokumentationsadressen (RFC 5737, RFC 3849), keine echten.
 SENSOR_IP = "192.0.2.10"
 SENSOR_IP6 = "2001:db8::10"
