@@ -106,9 +106,16 @@ def test_responses_land_in_their_own_table(client, migrated):
 
     with migrated.connect() as connection:
         rows = connection.execute(
-            select(LlmResponse).order_by(LlmResponse.command_index)
-        ).scalars().all()
-    assert [(r.command_index, r.outcome, r.http_status, r.latency_ms, r.output_chars, r.client_gone) for r in rows] == [
+            select(
+                LlmResponse.command_index,
+                LlmResponse.outcome,
+                LlmResponse.http_status,
+                LlmResponse.latency_ms,
+                LlmResponse.output_chars,
+                LlmResponse.client_gone,
+            ).order_by(LlmResponse.command_index)
+        ).all()
+    assert [tuple(row) for row in rows] == [
         (1, "ok", 200, 1200, 40, True),
         (2, "local_rate_limit", None, None, 0, False),
     ]
