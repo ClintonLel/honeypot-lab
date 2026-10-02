@@ -1,0 +1,18 @@
+# Laufzeit-Abhängigkeiten von cowrie-b: alle Distributionen, die Python im
+# Image findet, mit Version, transitive eingeschlossen (Schritt 7.3, E-044).
+# Der Bau prüft dieses Lock gegen das Image (lab/lockcheck.py) und bricht bei
+# jeder Abweichung ab. Erzeugt aus dem Image cowrie/cowrie:3.0.14 mit dem
+# Digest aus docker-compose.yml; die Bits sichert der Digest.
+#
+# ENTWURF: wird aus der Ausgabe des ersten CI-Laufs ersetzt.
+attrs==26.1.0
+bcrypt==5.0.0
+cryptography==50.0.0
+hyperlink==21.0.0
+idna==3.18
+lark==1.3.1
+packaging==26.3
+pyasn1-modules==0.4.2
+service-identity==26.1.0
+treq==26.7.0
+twisted==26.4.0

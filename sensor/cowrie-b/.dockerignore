@@ -1,0 +1,4 @@
+# Nur Patch, Prüfsummen, Lock und lab/ gehören ins Image.
+tests/
+__pycache__/
+*.pyc
