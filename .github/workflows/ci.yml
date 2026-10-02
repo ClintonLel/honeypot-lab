@@ -98,6 +98,48 @@ jobs:
             exit 1
           fi
 
+      # Die Regeln wirklich laden, in eigenen Netz-Namespaces: 2322 nur nach
+      # Umleitung oder von lo (Schritt 7.3, E-044). Die JSON-Ausgabe von nft
+      # prüft danach dieselbe Funktion wie das Prüfskript auf dem Sensor.
+      - name: nftables in Netz-Namespaces
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends nftables
+          sudo nft -c -f sensor/nftables/honeypot.nft
+          sudo sensor/scripts/test-nft-guard.sh "$RUNNER_TEMP/nft.json"
+          python sensor/scripts/check-cowrie-b.py --nft-json "$RUNNER_TEMP/nft.json"
+
+  cowrie-b:
+    name: cowrie-b bauen und testen
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      IMAGE: localhost/honeypot-lab/cowrie-b:ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Scheitert, wenn die Originaldateien im Image nicht die erwarteten
+      # sind, der Patch nicht ohne Unschärfe passt oder das Lock abweicht.
+      - name: Image bauen
+        run: docker build -t "$IMAGE" sensor/cowrie-b
+
+      # Im Image selbst, gegen die gepatchten Dateien: unsere Tests mit
+      # Fake-Gateway und Cowries eigene Tests des LLM-Backends.
+      - name: Trial-Tests im Image
+        run: |
+          docker run --rm --read-only --tmpfs /tmp:size=64m \
+            --entrypoint /cowrie/cowrie-env/bin/python3 \
+            -v "$PWD/sensor/cowrie-b/tests:/lab-tests:ro" \
+            -e PYTHONPATH=/cowrie/cowrie-git/src:/lab-tests \
+            -w /cowrie/cowrie-git \
+            "$IMAGE" -m twisted.trial --temp-directory=/tmp/_trial_temp \
+            test_lab_patch cowrie.test.test_llm
+
+      # Parität A/B über echtes SSH, Ausgabe wie ohne Patch, motd, EOF.
+      - name: Ende zu Ende in Containern
+        run: python3 sensor/cowrie-b/tests/e2e.py --image "$IMAGE"
+
   secrets:
     name: Auf Geheimnisse prüfen
     runs-on: ubuntu-latest

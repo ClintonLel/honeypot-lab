@@ -1,7 +1,7 @@
 # Honeypot-Lab: Dienste auf dem Sensor
 #
-# Schritt 2.2: cowrie-a (klassische Shell), Schritt 4.2: vector.
-# cowrie-b folgt in Phase 7.
+# Schritt 2.2: cowrie-a (klassische Shell), Schritt 4.2: vector,
+# Schritt 7.3: cowrie-b (LLM-Backend mit Patch, noch ohne Verkehr).
 # Vorbereitung und Befehle: sensor/README.md
 
 name: honeypot
@@ -43,6 +43,48 @@ services:
       - /srv/honeypot/hostkeys:/cowrie/hostkeys:ro
       - /srv/honeypot/a/var:/cowrie/cowrie-git/var
 
+  # Variante B: Cowries LLM-Backend mit dem Patch aus E-041 (Schritt 7.3,
+  # E-044). Dasselbe Basis-Image wie cowrie-a, siehe cowrie-b/Dockerfile.
+  # Verkehr bekommt B erst mit Schritt 7.4: Bis dahin leitet nftables Port 22
+  # nur auf cowrie-a, 2322 ist in der Hetzner-Firewall zu und per nftables
+  # nur über die Umleitung oder vom Sensor selbst erreichbar.
+  cowrie-b:
+    <<: *cowrie
+    # Lokal gebaut, nie aus einer Registry: "localhost/" lässt sich nicht
+    # von Docker Hub auflösen, pull_policy baut immer aus cowrie-b/.
+    image: localhost/honeypot-lab/cowrie-b:3.0.14-lab.1
+    build:
+      context: ./cowrie-b
+    pull_policy: build
+    container_name: cowrie-b
+    environment:
+      COWRIE_HONEYPOT_SENSOR_NAME: hp-b
+      COWRIE_HONEYPOT_BACKEND: llm
+      # Nur IPv4 wie cowrie-a. Erreichbar erst über die Zuteilung (7.4).
+      COWRIE_SSH_LISTEN_ENDPOINTS: tcp:2322:interface=0.0.0.0
+      # Das LLM-Gateway auf dem Hauptserver (E-008, E-043). Das Token setzt
+      # cowrie-b/lab/launch.py aus /run/secrets/llm, den Prompt aus
+      # persona/prompt.md. Modell, max_tokens und temperature setzt das Gateway.
+      COWRIE_LLM_HOST: https://api.tomkaufmann.dev
+      COWRIE_LLM_PATH: /v1/chat/completions
+      # Länger als das Zeitlimit des Gateways (höchstens 55 s), kürzer als
+      # Cowries 60 s für Exec-Sitzungen (E-044, method.md 4.5).
+      COWRIE_LLM_REQUEST_TIMEOUT: "58"
+      # Cowries Begrenzung je Adresse, ausdrücklich gesetzt (method.md 4.5).
+      # Der Wert für den Start steht noch aus.
+      COWRIE_LLM_RATE_LIMIT_REQUESTS: "20"
+      COWRIE_LLM_RATE_LIMIT_WINDOW: "60"
+      # An, schriebe Cowrie Prompts und Antworten in sein Log.
+      COWRIE_LLM_DEBUG: "false"
+    volumes:
+      - ./cowrie:/cowrie/cowrie-git/etc:ro
+      - ./persona:/cowrie/persona:ro
+      - /srv/honeypot/persona/fs.pickle:/cowrie/fs.pickle:ro
+      - /srv/honeypot/hostkeys:/cowrie/hostkeys:ro
+      - /srv/honeypot/b/var:/cowrie/cowrie-git/var
+      # Nur das Gateway-Token, eine Datei. Vector sieht dieses Verzeichnis nicht.
+      - /srv/honeypot/secrets-b:/run/secrets/llm:ro
+
   # Liest die Cowrie-Logs und liefert sie an die Lab-API (E-005, Schritt 4.2).
   # Keine eingehende Verbindung, kein Port, nur ausgehend nach
   # https://api.tomkaufmann.dev/ingest (E-007).
@@ -80,6 +122,7 @@ services:
       - /srv/honeypot/secrets:/run/secrets/lab:ro
       # Nur die Logs, lesend. Host-Keys und fs.pickle sieht Vector nicht.
       - /srv/honeypot/a/var/log/cowrie:/srv/honeypot/a/var/log/cowrie:ro
+      - /srv/honeypot/b/var/log/cowrie:/srv/honeypot/b/var/log/cowrie:ro
       # Positionsmerker und Plattenpuffer.
       - /srv/honeypot/vector:/var/lib/vector
     depends_on:

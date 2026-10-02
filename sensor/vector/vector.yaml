@@ -25,9 +25,10 @@ sources:
       # die rotierten ginge verloren, was nach Mitternacht noch in die alte
       # Datei läuft, und ältere Tage würden nie gelesen. Doppelt liest Vector
       # nichts: Er erkennt eine umbenannte Datei am Inhalt (E-027).
-      # Nur Variante A. Variante B bekommt in Phase 7 denselben Eintrag und
-      # ihren eigenen Mount in docker-compose.yml.
+      # Beide Varianten, je mit eigenem Mount in docker-compose.yml. Die
+      # Variante ergibt sich unten aus dem Pfad (Schritt 7.3, V6).
       - /srv/honeypot/a/var/log/cowrie/cowrie.json*
+      - /srv/honeypot/b/var/log/cowrie/cowrie.json*
     # Beim ersten Start alles mitnehmen, was schon dasteht. Danach merkt sich
     # Vector die Position im data_dir.
     read_from: beginning

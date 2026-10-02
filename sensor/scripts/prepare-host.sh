@@ -44,6 +44,11 @@ cowrie_dir 0700 "$ROOT/vector"
 # kommt nicht von hier, sondern wird von Hand angelegt, siehe README.
 cowrie_dir 0700 "$ROOT/secrets"
 
+# Gateway-Token für cowrie-b, eine Datei (Schritt 7.3). Eigenes Verzeichnis:
+# Vector bekommt /srv/honeypot/secrets eingebunden und soll das Token nicht
+# sehen, cowrie-b nicht das Ingest-Token. Inhalt von Hand, siehe README.
+cowrie_dir 0700 "$ROOT/secrets-b"
+
 # Gemeinsame Host-Keys, damit A und B vor dem Login gleich aussehen (E-002)
 cowrie_dir 0700 "$ROOT/hostkeys"
 for type in rsa ecdsa ed25519; do
