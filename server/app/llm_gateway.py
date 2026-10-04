@@ -2,10 +2,10 @@
 
 cowrie-b ruft nie den Anbieter direkt, sondern diesen Endpunkt im
 OpenAI-Format. Das Gateway prüft Token und Anfrage, setzt Modell und Grenzen
-aus der eigenen Konfiguration durch, leitet an einen OpenAI-kompatiblen
-Anbieter weiter und schreibt jede Anfrage mit gültigem Token in
-``llm_usage``. Der echte API-Key steht nur in der ``.env`` des Hauptservers
-(E-008).
+aus der eigenen Konfiguration durch, leitet an die Gemini-API weiter (deren
+OpenAI-kompatiblen Endpunkt, ``app.llm_provider``, E-045) und schreibt jede
+Anfrage mit gültigem Token in ``llm_usage``. Der echte API-Key steht nur in
+der ``.env`` des Hauptservers (E-008).
 
 Kein Inhalt in Logs: weder Prompt noch Antwort noch Teile davon, auch nicht
 bei Fehlern. Bei Exec steht der Befehl des Angreifers im System-Prompt.
@@ -18,11 +18,13 @@ Reihenfolge je Anfrage (E-043):
 2. Token fehlt oder falsch: 401, keine Zeile, nur eine Logzeile ohne Inhalt.
 3. Gateway abgeschaltet oder unvollständig konfiguriert: 503, ``disabled``.
 4. Rumpf zu groß: 413, Anfrage ungültig: 400, beides ``rejected``.
-5. Budget erreicht: 503 ``budget_exceeded``. Minutengrenze: 429
+5. Leere Zeile oder Exec ohne Befehl: 200 mit leerem Text, ohne Anbieter,
+   ``local_empty`` (Gemini nimmt leeren Text nicht an, E-045).
+6. Budget erreicht: 503 ``budget_exceeded``. Minutengrenze: 429
    ``rate_limited``. Der Anbieter wird nicht gerufen.
-6. Anbieter: Zeitüberschreitung 504 ``timeout``, 429 des Anbieters 502
-   ``upstream_limited``, sonstiger Fehler 502 ``upstream_error``, Erfolg 200
-   ``ok``.
+7. Anbieter: Zeitüberschreitung 504 ``timeout``, 429 oder 402 des Anbieters
+   502 ``upstream_limited``, gesperrte Antwort 502 ``upstream_blocked``,
+   sonstiger Fehler 502 ``upstream_error``, Erfolg 200 ``ok``.
 
 429 entsteht nur an der Minutengrenze. Sie gehört zur Behandlung, ein
 Budgetstopp ist ein Ausfall (``docs/method.md`` 8, V3); auf dem Sensor trennt
@@ -41,7 +43,6 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Protocol
-from urllib.parse import urlsplit
 
 import httpx2
 from fastapi import APIRouter, Depends, Request
@@ -62,7 +63,9 @@ from app.llm_limits import (
     estimate_micros,
     parse_usage,
 )
-from app.llm_request import MAX_BODY_BYTES, CheckedRequest, RequestRejected, parse_request
+from app.llm_provider import ALL_EFFORTS, GEMINI_URL, MODELS, Model, read_reply, to_gemini
+from app.llm_refusal import looks_like_refusal
+from app.llm_request import MAX_BODY_BYTES, RequestRejected, parse_request
 from app.models import LlmUsage
 
 logger = logging.getLogger("lab.llm")
@@ -77,8 +80,6 @@ MAX_TOKENS_RANGE = (1, 16_384)
 TEMPERATURE_RANGE = (0.0, 2.0)
 TIMEOUT_RANGE = (1.0, 55.0)
 CALLS_PER_MINUTE_RANGE = (1, 10_000)
-MAX_TOKENS_PARAMS = ("max_completion_tokens", "max_tokens")
-FINISH_REASONS = ("stop", "length", "content_filter")
 # Breite der Spalte llm_usage.model.
 MAX_MODEL_CHARS = 64
 # Obergrenze für den content, den das Gateway an Cowrie zurückgibt (E-044).
@@ -99,17 +100,22 @@ class GatewayConfig:
     """Geprüfte Einstellungen. Der Key bleibt ein ``SecretStr``."""
 
     api_key: SecretStr
-    url: str
     model: str
+    spec: Model
     max_tokens: int
-    max_tokens_param: str
     temperature: float
+    reasoning_effort: str
+    merge_turns: bool
     timeout_seconds: float
-    prices: Prices
     budget_month_micros: int
     budget_day_micros: int
     calls_per_minute: int
     prompt_sha256: str
+    url: str = GEMINI_URL
+
+    def prices_on(self, moment: datetime) -> Prices:
+        """Preise am Tag, an dem die Anfrage begann (UTC)."""
+        return self.spec.prices_on(moment.astimezone(timezone.utc).date())
 
 
 def _within(value: Any, bounds: tuple[Any, Any]) -> bool:
@@ -119,21 +125,6 @@ def _within(value: Any, bounds: tuple[Any, Any]) -> bool:
 
 def _positive(value: Decimal | None) -> bool:
     return value is not None and value.is_finite() and value > 0
-
-
-def _usable_url(url: str) -> bool:
-    """Nur https, mit Host, ohne Zugangsdaten, Abfrage oder Anker in der URL."""
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return False
-    return (
-        parts.scheme == "https"
-        and bool(parts.hostname)
-        and "@" not in parts.netloc
-        and not parts.query
-        and not parts.fragment
-    )
 
 
 def build_config(settings: Settings) -> tuple[GatewayConfig | None, list[str]]:
@@ -147,30 +138,23 @@ def build_config(settings: Settings) -> tuple[GatewayConfig | None, list[str]]:
         problems.append("LLM_GATEWAY_TOKEN")
     if secret_problem(settings.llm_api_key.get_secret_value()):
         problems.append("LLM_API_KEY")
-    if not _usable_url(settings.llm_base_url):
-        problems.append("LLM_BASE_URL")
     model = settings.llm_model.strip()
-    if not model or len(model) > MAX_MODEL_CHARS:
+    spec = MODELS.get(model)
+    if spec is None:
         problems.append("LLM_MODEL")
+    effort = settings.llm_reasoning_effort.strip().lower()
+    if effort not in (spec.efforts if spec else ALL_EFFORTS):
+        problems.append("LLM_REASONING_EFFORT")
     if not _within(settings.llm_max_tokens, MAX_TOKENS_RANGE):
         problems.append("LLM_MAX_TOKENS")
-    if settings.llm_max_tokens_param not in MAX_TOKENS_PARAMS:
-        problems.append("LLM_MAX_TOKENS_PARAM")
     if not _within(settings.llm_temperature, TEMPERATURE_RANGE):
         problems.append("LLM_TEMPERATURE")
     if not _within(settings.llm_timeout_seconds, TIMEOUT_RANGE):
         problems.append("LLM_TIMEOUT_SECONDS")
-    if not _positive(settings.llm_price_input_eur):
-        problems.append("LLM_PRICE_INPUT_EUR")
-    cached = settings.llm_price_cached_input_eur
-    if cached is None or not cached.is_finite() or cached < 0:
-        problems.append("LLM_PRICE_CACHED_INPUT_EUR")
-    if not _positive(settings.llm_price_output_eur):
-        problems.append("LLM_PRICE_OUTPUT_EUR")
-    if not _positive(settings.llm_budget_month_eur):
-        problems.append("LLM_BUDGET_MONTH_EUR")
-    if not _positive(settings.llm_budget_day_eur):
-        problems.append("LLM_BUDGET_DAY_EUR")
+    if not _positive(settings.llm_budget_month_usd):
+        problems.append("LLM_BUDGET_MONTH_USD")
+    if not _positive(settings.llm_budget_day_usd):
+        problems.append("LLM_BUDGET_DAY_USD")
     if not _within(settings.llm_calls_per_minute, CALLS_PER_MINUTE_RANGE):
         problems.append("LLM_CALLS_PER_MINUTE")
     pinned = settings.llm_prompt_sha256.strip().lower()
@@ -179,22 +163,19 @@ def build_config(settings: Settings) -> tuple[GatewayConfig | None, list[str]]:
 
     if problems:
         return None, problems
+    assert spec is not None
     return (
         GatewayConfig(
             api_key=settings.llm_api_key,
-            url=settings.llm_base_url.rstrip("/") + "/chat/completions",
             model=model,
+            spec=spec,
             max_tokens=settings.llm_max_tokens,
-            max_tokens_param=settings.llm_max_tokens_param,
             temperature=settings.llm_temperature,
+            reasoning_effort=effort,
+            merge_turns=settings.llm_merge_turns,
             timeout_seconds=settings.llm_timeout_seconds,
-            prices=Prices(
-                input=settings.llm_price_input_eur,
-                cached_input=cached,
-                output=settings.llm_price_output_eur,
-            ),
-            budget_month_micros=int(settings.llm_budget_month_eur * 1_000_000),
-            budget_day_micros=int(settings.llm_budget_day_eur * 1_000_000),
+            budget_month_micros=int(settings.llm_budget_month_usd * 1_000_000),
+            budget_day_micros=int(settings.llm_budget_day_usd * 1_000_000),
             calls_per_minute=settings.llm_calls_per_minute,
             prompt_sha256=pinned,
         ),
@@ -216,8 +197,11 @@ class UsageRecord:
     completion_tokens: int = 0
     total_tokens: int = 0
     cached_tokens: int = 0
+    reasoning_tokens: int = 0
     cost_micros: int = 0
     latency_ms: int | None = None
+    # Die Antwort passte zu einer Wendung aus app.llm_refusal (E-045).
+    refusal: bool = False
 
 
 class Ledger(Protocol):
@@ -267,9 +251,11 @@ _ERRORS: dict[str, tuple[int, str, str, str]] = {
     "upstream_error": (502, "server_error", "upstream_error", "Anbieter nicht verfügbar"),
     "internal": (500, "server_error", "internal_error", "interner Fehler"),
 }
-# Ein 429 des Anbieters, etwa dessen hartes Monatslimit. Für den Sensor wie
-# jeder andere Fehler beim Anbieter, in llm_usage mit eigenem Status.
+# Ein 429 oder 402 des Anbieters (Grenze, Ausgabenlimit, Prepay leer) und eine
+# gesperrte Antwort. Für den Sensor wie jeder andere Fehler beim Anbieter, in
+# llm_usage mit eigenem Status.
 _ERRORS["upstream_limited"] = _ERRORS["upstream_error"]
+_ERRORS["upstream_blocked"] = _ERRORS["upstream_error"]
 
 
 def error_response(kind: str, headers: dict[str, str] | None = None) -> JSONResponse:
@@ -320,6 +306,10 @@ class Outcome:
     finish_reason: str = "stop"
     # content auf MAX_REPLY_CHARS bzw. MAX_REPLY_JSON_BYTES gekürzt.
     truncated: bool = False
+    # Für die Logzeile, ohne Inhalt (app.llm_provider.Reply).
+    finish_log: str | None = None
+    block: str | None = None
+    refusal: bool = False
 
 
 def _escaped_len(char: str) -> int:
@@ -343,26 +333,6 @@ def cap_reply(content: str) -> tuple[str, bool]:
             break
         keep += 1
     return content[:keep], True
-
-
-def _choice(payload: Any) -> tuple[str, str] | None:
-    """``content`` und ``finish_reason`` aus der ersten Wahl, sonst ``None``."""
-    if not isinstance(payload, dict):
-        return None
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        return None
-    message = choices[0].get("message")
-    if not isinstance(message, dict):
-        return None
-    content = message.get("content")
-    if content is None:
-        # Etwa bei einer Weigerung des Modells. Cowrie gibt dann nichts aus.
-        content = ""
-    if not isinstance(content, str):
-        return None
-    finish = choices[0].get("finish_reason")
-    return content, finish if finish in FINISH_REASONS else "stop"
 
 
 # --- Gateway ---------------------------------------------------------------------
@@ -451,8 +421,9 @@ class Gateway:
                 extra={
                     "model": config.model,
                     "max_tokens": config.max_tokens,
-                    "max_tokens_param": config.max_tokens_param,
                     "temperature": config.temperature,
+                    "reasoning_effort": config.reasoning_effort,
+                    "merge_turns": config.merge_turns,
                     "timeout_s": config.timeout_seconds,
                     "calls_per_minute": config.calls_per_minute,
                     "budget_monat_micros": config.budget_month_micros,
@@ -509,6 +480,13 @@ class Gateway:
         # in 7.3 lässt sich genau der Wert pinnen, der wirklich ankommt.
         prompt = {"prompt_sha256": checked.persona_sha256}
 
+        messages = to_gemini(checked, config.merge_turns)
+        if messages is None:
+            # Leere Zeile oder Exec ohne Befehl. Eine echte Shell gibt nichts
+            # aus, und Gemini nimmt leeren Text nicht an (E-045).
+            await self._finish(UsageRecord(started_at, config.model, "local_empty"), http=200, extra=prompt)
+            return JSONResponse(completion_response("", "stop", config.model, started_at))
+
         try:
             await budget.load(self.ledger.spent, started_at)
         except Exception as exc:  # noqa: BLE001 - ohne Budgetstand kein Aufruf
@@ -526,7 +504,7 @@ class Gateway:
             )
             return error_response("rate_limited", headers={"Retry-After": str(max(1, round(wait)))})
 
-        outcome = await self._forward(config, checked)
+        outcome = await self._forward(config, messages, checked.chars, started_at)
         # Sofort zählen, noch vor dem Schreiben in die Datenbank: Die nächste
         # Anfrage soll die Kosten schon sehen.
         budget.add(outcome.cost_micros, started_at, self._clock())
@@ -538,8 +516,10 @@ class Gateway:
             completion_tokens=outcome.usage.completion_tokens,
             total_tokens=outcome.usage.total_tokens,
             cached_tokens=outcome.usage.cached_tokens,
+            reasoning_tokens=outcome.usage.reasoning_tokens,
             cost_micros=outcome.cost_micros,
             latency_ms=outcome.latency_ms,
+            refusal=outcome.refusal,
         )
         http = {"ok": 200, "timeout": 504}.get(outcome.status, 502)
         await self._finish(
@@ -550,6 +530,9 @@ class Gateway:
                 "upstream_status": outcome.upstream_status,
                 "geschaetzt": outcome.estimated,
                 "gekuerzt": outcome.truncated,
+                "finish_reason": outcome.finish_log,
+                "block": outcome.block,
+                "leer": outcome.status == "ok" and not outcome.content,
             },
         )
         if outcome.status == "ok":
@@ -558,23 +541,28 @@ class Gateway:
             )
         return error_response(outcome.status)
 
-    async def _forward(self, config: GatewayConfig, checked: CheckedRequest) -> Outcome:
+    async def _forward(
+        self, config: GatewayConfig, messages: list[dict[str, str]], chars: int, started_at: datetime
+    ) -> Outcome:
         """Ein Aufruf beim Anbieter, ohne Wiederholung."""
         assert self._client is not None
         payload = {
             "model": config.model,
-            # Unverändert, damit der Anbieter den gleichbleibenden Anfang
-            # zwischenspeichern kann (E-015).
-            "messages": checked.messages,
-            config.max_tokens_param: config.max_tokens,
+            # Der System-Prompt ist in jeder Anfrage gleich, damit der Anbieter
+            # ihn zwischenspeichern kann (E-015, E-045).
+            "messages": messages,
+            # max_tokens schließt bei Gemini die Denk-Tokens ein.
+            "max_tokens": config.max_tokens,
             "temperature": config.temperature,
+            "reasoning_effort": config.reasoning_effort,
         }
         headers = {
             "Authorization": f"Bearer {config.api_key.get_secret_value()}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        estimate = estimate_micros(checked.chars, config.max_tokens, config.prices)
+        prices = config.prices_on(started_at)
+        estimate = estimate_micros(chars, config.max_tokens, prices)
         started = self._monotonic()
 
         def elapsed() -> int:
@@ -607,8 +595,9 @@ class Gateway:
             return Outcome("upstream_error", elapsed(), cost_micros=estimate, estimated=True)
 
         latency = elapsed()
-        if upstream_status == 429:
-            # Grenze beim Anbieter, etwa das harte Monatslimit. Nicht abgerechnet.
+        if upstream_status in (402, 429):
+            # Grenze beim Anbieter: Minuten- oder Ausgabenlimit (429) oder
+            # Prepay-Guthaben leer (402). Nicht abgerechnet.
             return Outcome("upstream_limited", latency, upstream_status=upstream_status)
         if upstream_status != 200:
             return Outcome("upstream_error", latency, upstream_status=upstream_status)
@@ -621,18 +610,33 @@ class Gateway:
         if usage is None:
             cost, estimated, usage = estimate, True, Usage()
         else:
-            cost, estimated = cost_micros(usage, config.prices), False
-        choice = _choice(parsed)
-        if choice is None:
+            cost, estimated = cost_micros(usage, prices), False
+        reply = read_reply(parsed)
+        if reply.status != "ok":
+            # Gesperrt oder unlesbar. Abgerechnet wird trotzdem, was usage sagt.
             return Outcome(
-                "upstream_error", latency, usage, cost, estimated, upstream_status=upstream_status
+                reply.status,
+                latency,
+                usage,
+                cost,
+                estimated,
+                upstream_status=upstream_status,
+                finish_log=reply.finish_log,
+                block=reply.block,
             )
-        content, finish_reason = choice
-        content, truncated = cap_reply(content)
-        if truncated:
-            finish_reason = "length"
+        content, truncated = cap_reply(reply.content)
         return Outcome(
-            "ok", latency, usage, cost, estimated, upstream_status, content, finish_reason, truncated
+            "ok",
+            latency,
+            usage,
+            cost,
+            estimated,
+            upstream_status,
+            content,
+            "length" if truncated else reply.finish_reason,
+            truncated,
+            finish_log=reply.finish_log,
+            refusal=bool(content) and looks_like_refusal(content),
         )
 
     async def _finish(
@@ -651,8 +655,10 @@ class Gateway:
                 "prompt_tokens": record.prompt_tokens,
                 "completion_tokens": record.completion_tokens,
                 "cached_tokens": record.cached_tokens,
+                "reasoning_tokens": record.reasoning_tokens,
                 "cost_micros": record.cost_micros,
                 "latency_ms": record.latency_ms,
+                "weigerung": record.refusal,
                 **(extra or {}),
             },
         )

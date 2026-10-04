@@ -123,7 +123,9 @@ def test_responses_land_in_their_own_table(client, migrated):
 
 def test_every_response_matches_the_command_at_its_place(client, migrated):
     send(client, a_session())
-    assert check(migrated) == {
+    found = check(migrated)
+    del found["gateway"]
+    assert found == {
         "aufrufe": 2,
         "passt": 2,
         "passt_nicht": 0,
@@ -232,6 +234,16 @@ def test_llm_check_prints_only_counts_and_exits_0(client, migrated, capsys):
         "nicht_pruefbar": 0,
         "befehle_ohne_aufruf": 0,
         "outcomes": {"local_rate_limit": 1, "ok": 1},
+        # Kein Aufruf ging über das Gateway dieses Tests.
+        "gateway": {
+            "status": {},
+            "weigerungen": 0,
+            "cache_quote": None,
+            "kosten_usd": 0.0,
+            "tage": 0.0,
+            "aufrufe_je_tag": None,
+            "kosten_je_monat_usd": None,
+        },
     }
     assert out.count("\n") == 1
     for secret in (FIRST, SOURCE, sha256(FIRST.encode("utf-8")).hexdigest()):

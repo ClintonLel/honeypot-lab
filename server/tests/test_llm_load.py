@@ -22,8 +22,8 @@ from tests.cowrie_llm import encode, exec_request
 from tests.llm_fakes import NOW, TEST_SECRET, MemoryLedger, Upstream, auth, llm_settings
 
 PATH = "/v1/chat/completions"
-# Eine Antwort der Attrappe kostet 1.005 µ€ (siehe test_llm_gateway.py).
-COST = 1005
+# Eine Antwort der Attrappe kostet 360 µ$ (CALL_COST in test_llm_gateway.py).
+COST = 360
 CALLS_IN_BUDGET = 10
 
 
@@ -68,7 +68,7 @@ def run(app, gateway: Gateway, workers: int, per_worker: int, stagger: float = 0
 
 def gateway(ledger: MemoryLedger, upstream: Upstream, **overrides) -> Gateway:
     settings = llm_settings(
-        llm_budget_day_eur=str(CALLS_IN_BUDGET * COST / 1_000_000),
+        llm_budget_day_usd=str(CALLS_IN_BUDGET * COST / 1_000_000),
         llm_calls_per_minute=10_000,
         **overrides,
     )
@@ -111,7 +111,7 @@ def test_after_the_budget_no_request_reaches_the_provider(app):
     calls = upstream.calls
 
     second = Gateway.from_settings(
-        llm_settings(llm_budget_day_eur=str(CALLS_IN_BUDGET * COST / 1_000_000), llm_calls_per_minute=10_000),
+        llm_settings(llm_budget_day_usd=str(CALLS_IN_BUDGET * COST / 1_000_000), llm_calls_per_minute=10_000),
         ledger=ledger,
         clock=lambda: NOW,
         transport=upstream.transport,

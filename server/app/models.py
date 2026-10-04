@@ -260,15 +260,22 @@ class LlmUsage(Base):
     total_tokens: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     # Teil von prompt_tokens aus dem Zwischenspeicher des Anbieters (Migration 0003).
     cached_tokens: Mapped[int] = mapped_column(Integer, server_default=text("0"))
-    # Kosten in Millionstel Euro, damit nichts gerundet werden muss. Bei
-    # "timeout" und fehlendem usage eine obere Schätzung (E-043).
+    # Teil von completion_tokens, den das Modell zum Denken brauchte; kostet
+    # wie Ausgabe (Migration 0005, E-045).
+    reasoning_tokens: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    # Kosten in Millionstel US-Dollar, damit nichts gerundet werden muss
+    # (E-045). Bei "timeout" und fehlendem usage eine obere Schätzung (E-043).
     cost_micros: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
     # Dauer des Aufrufs beim Anbieter. Leer, wenn er nicht gerufen wurde.
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     # ok, rate_limited, budget_exceeded, timeout, upstream_error,
-    # upstream_limited (429 des Anbieters, etwa sein hartes Limit), rejected,
-    # disabled (E-043)
+    # upstream_limited (429 oder 402 des Anbieters, etwa sein Ausgabenlimit),
+    # rejected, disabled (E-043), upstream_blocked (Antwort gesperrt),
+    # local_empty (leere Zeile, ohne Anbieter beantwortet) (E-045)
     status: Mapped[str] = mapped_column(String(32))
+    # Die Antwort passte zu einer Wendung aus app.llm_refusal. Kein Text
+    # (Migration 0005, E-045).
+    refusal: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

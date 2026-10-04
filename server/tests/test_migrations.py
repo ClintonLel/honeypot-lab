@@ -89,3 +89,49 @@ def test_variant_check_rejects_unknown_values(migrated):
         )
         with pytest.raises(IntegrityError):
             db.commit()
+
+
+# --- 0005: Kosten in US-Dollar (E-045) ------------------------------------------
+
+
+def llm_usage_row(engine, cost: int) -> None:
+    from sqlalchemy import text
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO llm_usage (occurred_at, model, status, cost_micros) "
+                "VALUES (now(), 'gpt-4o-mini', :status, :cost)"
+            ),
+            {"status": "ok" if cost else "disabled", "cost": cost},
+        )
+
+
+def test_0005_runs_when_llm_usage_has_no_costs(database_url: str):
+    engine = create_engine(database_url, future=True)
+    config = alembic_config(database_url)
+    command.upgrade(config, "0004")
+    try:
+        llm_usage_row(engine, 0)
+        command.upgrade(config, "0005")
+        columns = {c["name"] for c in inspect(engine).get_columns("llm_usage")}
+        assert {"reasoning_tokens", "refusal"} <= columns
+    finally:
+        command.downgrade(config, "base")
+        engine.dispose()
+
+
+def test_0005_stops_if_llm_usage_already_has_costs_in_euro(database_url: str):
+    """Bis E-045 wurde kein Key eingetragen. Stehen doch Kosten da, erst klären."""
+    engine = create_engine(database_url, future=True)
+    config = alembic_config(database_url)
+    command.upgrade(config, "0004")
+    try:
+        llm_usage_row(engine, 1005)
+        with pytest.raises(RuntimeError, match="1 Zeilen mit Kosten > 0"):
+            command.upgrade(config, "0005")
+        columns = {c["name"] for c in inspect(engine).get_columns("llm_usage")}
+        assert "reasoning_tokens" not in columns
+    finally:
+        command.downgrade(config, "base")
+        engine.dispose()

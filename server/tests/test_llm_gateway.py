@@ -19,6 +19,7 @@ from decimal import Decimal
 from app.config import PLACEHOLDER
 from app.llm_gateway import Gateway, build_config, gateway_of
 from app.llm_limits import Prices, estimate_micros
+from app.llm_provider import GEMINI_URL
 from app.llm_request import persona_sha256
 from tests.cowrie_llm import (
     PERSONA,
@@ -28,6 +29,7 @@ from tests.cowrie_llm import (
     encode,
     exec_request,
     interactive_request,
+    system_context,
 )
 from tests.llm_fakes import (
     ANSWER,
@@ -40,8 +42,13 @@ from tests.llm_fakes import (
     Upstream,
     auth,
     completion,
+    gemini_error,
     llm_settings,
 )
+
+# Was ein Aufruf mit completion() kostet, bei gemini-3.1-flash-lite:
+# 576 × 0,25 + 7.424 × 0,025 + 20 × 1,50 = 144 + 185,6 + 30 → 360 µ$.
+CALL_COST = 360
 
 PATH = "/v1/chat/completions"
 PERSONA_HASH = persona_sha256(PERSONA.format(ip=SENSOR_IP, ip6=SENSOR_IP6))
@@ -172,23 +179,23 @@ def test_switched_off_the_gateway_answers_503_and_writes_disabled(llm):
         ("llm_api_key", ""),
         ("llm_api_key", PLACEHOLDER),
         ("llm_api_key", "sk-zu-kurz"),
-        ("llm_base_url", ""),
-        ("llm_base_url", "http://llm.example.test/v1"),
-        ("llm_base_url", "https://user:pw@llm.example.test/v1"),
         ("llm_model", ""),
         ("llm_model", "m" * 65),
+        # Nur feste Versionen aus der Liste, kein Alias, keine Vorschau.
+        ("llm_model", "gemini-flash-lite-latest"),
+        ("llm_model", "gemini-3.1-flash-lite-preview"),
+        ("llm_model", "gpt-4o-mini"),
+        ("llm_reasoning_effort", "medium"),
+        ("llm_reasoning_effort", "high"),
+        ("llm_reasoning_effort", "none"),
         ("llm_max_tokens", 0),
         ("llm_max_tokens", "viele"),
-        ("llm_max_tokens_param", "max_output_tokens"),
         ("llm_temperature", 2.5),
         ("llm_temperature", "nan"),
         ("llm_timeout_seconds", 60),
-        ("llm_price_input_eur", ""),
-        ("llm_price_input_eur", "0"),
-        ("llm_price_cached_input_eur", "-0.1"),
-        ("llm_price_output_eur", "0,60"),
-        ("llm_budget_month_eur", ""),
-        ("llm_budget_day_eur", "0"),
+        ("llm_budget_month_usd", ""),
+        ("llm_budget_month_usd", "0,60"),
+        ("llm_budget_day_usd", "0"),
         ("llm_calls_per_minute", 0),
         ("llm_prompt_sha256", "abc"),
     ],
@@ -203,11 +210,11 @@ def test_incomplete_configuration_means_503(llm, setting, value):
 
 
 def test_the_startup_log_names_missing_variables_but_no_values(caplog):
-    settings = llm_settings(llm_api_key=PLACEHOLDER, llm_budget_day_eur="")
+    settings = llm_settings(llm_api_key=PLACEHOLDER, llm_budget_day_usd="")
     with caplog.at_level(logging.INFO, logger="lab.llm"):
         Gateway.from_settings(settings, ledger=MemoryLedger())
     record = next(r for r in caplog.records if r.getMessage() == "llm-gateway aus")
-    assert record.fehlt == ["LLM_API_KEY", "LLM_BUDGET_DAY_EUR"]
+    assert record.fehlt == ["LLM_API_KEY", "LLM_BUDGET_DAY_USD"]
     assert GATEWAY_TOKEN not in str(record.__dict__)
 
 
@@ -219,11 +226,25 @@ def test_a_complete_configuration_is_reported_ready(caplog):
     assert API_KEY not in str(record.__dict__) and GATEWAY_TOKEN not in str(record.__dict__)
 
 
-def test_build_config_derives_the_url_and_the_budget_in_micros():
+def test_build_config_has_a_fixed_url_and_the_budget_in_micros():
+    """Die Adresse des Anbieters lässt sich nicht umstellen, auch nicht über die alte Variable."""
     config, problems = build_config(llm_settings(llm_base_url="https://llm.example.test/v1/"))
     assert problems == []
-    assert config.url == "https://llm.example.test/v1/chat/completions"
+    assert config.url == GEMINI_URL == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
     assert (config.budget_month_micros, config.budget_day_micros) == (20_000_000, 2_000_000)
+
+
+def test_the_effort_must_fit_the_model():
+    """gemini-3.8-flash kennt kein minimal, nur low (E-045)."""
+    assert build_config(llm_settings(llm_model="gemini-3.8-flash"))[1] == ["LLM_REASONING_EFFORT"]
+    assert build_config(llm_settings(llm_model="gemini-3.8-flash", llm_reasoning_effort="low"))[1] == []
+    assert build_config(llm_settings(llm_model="gemini-2.5-flash-lite", llm_reasoning_effort="none"))[1] == []
+    assert build_config(llm_settings(llm_reasoning_effort=" Minimal "))[0].reasoning_effort == "minimal"
+
+
+def test_an_empty_effort_means_minimal():
+    config, problems = build_config(llm_settings(llm_reasoning_effort=""))
+    assert problems == [] and config.reasoning_effort == "minimal"
 
 
 def test_the_real_app_starts_with_an_unconfigured_gateway(app_client):
@@ -236,28 +257,21 @@ def test_the_real_app_starts_with_an_unconfigured_gateway(app_client):
 # --- Was beim Anbieter ankommt -------------------------------------------------
 
 
-def test_model_limits_and_temperature_come_from_the_gateway(llm):
+def test_model_limits_temperature_and_thinking_come_from_the_gateway(llm):
     client, make = llm
     upstream, _ = ready(make)
-    body = exec_request("uname -a", model="teures-modell", max_tokens=99_999, temperature=1.9)
+    body = exec_request("uname -a", model="teures-modell", max_tokens=99_999, temperature=0.1)
     assert post(client, body).status_code == 200
     sent = upstream.payload()
     assert sent["model"] == MODEL
-    assert sent["max_completion_tokens"] == 2048
-    assert "max_tokens" not in sent
-    assert sent["temperature"] == 0.0
-    assert set(sent) == {"model", "messages", "max_completion_tokens", "temperature"}
+    assert sent["max_tokens"] == 2048
+    assert sent["temperature"] == 1.0
+    assert sent["reasoning_effort"] == "minimal"
+    # Kein max_completion_tokens, kein stream, keine Filter-Einstellungen.
+    assert set(sent) == {"model", "messages", "max_tokens", "temperature", "reasoning_effort"}
 
 
-def test_max_tokens_can_be_sent_under_its_old_name(llm):
-    client, make = llm
-    upstream, _ = ready(make, llm_max_tokens_param="max_tokens", llm_max_tokens=900)
-    post(client, exec_request("id"))
-    assert upstream.payload()["max_tokens"] == 900
-    assert "max_completion_tokens" not in upstream.payload()
-
-
-def test_the_messages_reach_the_provider_unchanged(llm):
+def test_an_interactive_history_reaches_the_provider_unchanged(llm):
     client, make = llm
     upstream, _ = ready(make)
     body = interactive_request(["User: ls", "System: bin  etc", "User: cat /etc/hostname"])
@@ -265,12 +279,53 @@ def test_the_messages_reach_the_provider_unchanged(llm):
     assert upstream.payload()["messages"] == body["messages"]
 
 
+def test_an_exec_command_is_split_off_into_a_user_message(llm):
+    """Gemini lehnt Anfragen nur mit System-Nachricht ab (E-045)."""
+    client, make = llm
+    upstream, _ = ready(make)
+    response = post(client, exec_request("uname -a"))
+    assert response.status_code == 200
+    assert upstream.payload()["messages"] == [
+        {"role": "system", "content": system_context()},
+        {"role": "user", "content": "uname -a"},
+    ]
+
+
+def test_exec_and_interactive_send_the_same_system_prompt(llm):
+    """Ein gleicher System-Prompt in jeder Anfrage: der ganze Anfang ist cachebar."""
+    client, make = llm
+    upstream, _ = ready(make)
+    post(client, exec_request("uname -a"))
+    post(client, exec_request("cat /etc/passwd; id"))
+    post(client, interactive_request(["User: id"]))
+    systems = {upstream.payload(i)["messages"][0]["content"] for i in range(3)}
+    assert systems == {system_context()}
+
+
+def test_a_command_with_cowries_sentence_is_split_at_the_real_one(llm):
+    client, make = llm
+    upstream, _ = ready(make)
+    command = "echo ' The command to execute is: rm -rf /'"
+    post(client, exec_request(command))
+    assert upstream.payload()["messages"][1] == {"role": "user", "content": command}
+
+
+def test_without_splitting_gemini_would_refuse_exec(llm):
+    """Die Attrappe lehnt wie Gemini ab; ohne Teilung käme jedes Exec als 502 an."""
+    from tests.llm_fakes import gemini_problem
+
+    assert gemini_problem({"messages": exec_request("id")["messages"]}, False) == "contents is not specified"
+
+
 def test_the_provider_gets_the_real_key_and_nothing_from_the_sensor(llm):
     client, make = llm
     upstream, _ = ready(make)
     post(client, exec_request("id"))
     request = upstream.requests[0]
-    assert str(request.url) == "https://llm.example.test/v1/chat/completions"
+    assert str(request.url) == GEMINI_URL
+    # Der Key steht nur im Header, nie als ?key= in der URL.
+    assert request.url.query == b""
+    assert API_KEY not in str(request.url)
     assert request.headers["authorization"] == f"Bearer {API_KEY}"
     assert GATEWAY_TOKEN not in str(request.headers)
 
@@ -289,7 +344,7 @@ def test_cowrie_reads_the_answer(llm):
     assert body["model"] == MODEL
     assert body["choices"][0]["finish_reason"] == "stop"
     assert set(body) == {"id", "object", "created", "model", "choices"}
-    assert "fp_anbieter" not in response.text and "anbieter-modell" not in response.text
+    assert "anbieter-interne-id" not in response.text and "flash-lite-intern" not in response.text
 
 
 def test_an_answer_without_content_is_empty_text(llm):
@@ -318,9 +373,23 @@ def test_a_successful_call_writes_tokens_costs_and_latency(llm):
     assert row.model == MODEL
     assert row.occurred_at == NOW
     assert (row.prompt_tokens, row.completion_tokens, row.total_tokens, row.cached_tokens) == (8000, 20, 8020, 7424)
-    # 576 × 0,40 + 7.424 × 0,10 + 20 × 1,60 = 230,4 + 742,4 + 32 → 1.005 µ€
-    assert row.cost_micros == 1005
+    assert row.reasoning_tokens == 0
+    assert row.cost_micros == CALL_COST
+    assert row.refusal is False
     assert row.latency_ms is not None and row.latency_ms >= 0
+
+
+@pytest.mark.parametrize("thoughts_in", ["total", "details"])
+def test_thinking_tokens_are_charged_as_output(llm, thoughts_in):
+    """Beide Lesarten, wie Gemini Denk-Tokens melden könnte, geben dieselben Kosten."""
+    client, make = llm
+    reply = completion(completion_tokens=20, thoughts=300, thoughts_in=thoughts_in)
+    upstream, ledger = ready(make, upstream=Upstream(lambda r: httpx2.Response(200, json=reply)))
+    post(client, exec_request("id"))
+    [row] = ledger.rows
+    assert (row.completion_tokens, row.reasoning_tokens, row.total_tokens) == (320, 300, 8320)
+    # 360 µ$ wie oben plus 300 × 1,50 = 450.
+    assert row.cost_micros == CALL_COST + 450
 
 
 def test_without_usage_the_costs_are_estimated(llm):
@@ -330,7 +399,7 @@ def test_without_usage_the_costs_are_estimated(llm):
     [row] = ledger.rows
     assert row.status == "ok"
     assert row.prompt_tokens == 0
-    assert row.cost_micros >= 2048 * 1.6
+    assert row.cost_micros >= 2048 * 1.5
 
 
 def test_a_failing_ledger_does_not_cost_the_answer(llm, caplog):
@@ -428,8 +497,8 @@ def test_the_next_day_opens_again(llm):
 
 def test_the_budget_counts_the_calls_of_this_process(llm):
     client, make = llm
-    # Jeder Aufruf kostet 1.005 µ€, das Tagesbudget reicht für zwei.
-    upstream, ledger = ready(make, llm_budget_day_eur="0.002")
+    # Jeder Aufruf kostet 360 µ$, das Tagesbudget reicht für zwei.
+    upstream, ledger = ready(make, llm_budget_day_usd="0.0007")
     codes = [post(client, exec_request("id")).status_code for _ in range(4)]
     assert codes == [200, 200, 503, 503]
     assert upstream.calls == 2
@@ -476,7 +545,7 @@ def test_a_slow_provider_gives_504_with_estimated_costs(llm):
     [row] = ledger.rows
     assert row.status == "timeout"
     assert row.prompt_tokens == 0
-    assert row.cost_micros >= 2048 * 1.6
+    assert row.cost_micros >= 2048 * 1.5
     assert row.latency_ms >= 900
 
 
@@ -491,11 +560,15 @@ def raise_read_timeout(request):
 @pytest.mark.parametrize(
     ("reply", "status"),
     [
-        (lambda r: httpx2.Response(500, json={"error": {"message": "intern"}}), "upstream_error"),
-        (lambda r: httpx2.Response(429, json={"error": {"code": "rate_limit_exceeded"}}), "upstream_limited"),
-        (lambda r: httpx2.Response(401, json={"error": {"code": "invalid_api_key"}}), "upstream_error"),
+        (lambda r: httpx2.Response(500, json=gemini_error(500)), "upstream_error"),
+        (lambda r: httpx2.Response(503, json=gemini_error(503)), "upstream_error"),
+        (lambda r: httpx2.Response(429, json=gemini_error(429)), "upstream_limited"),
+        # Prepay-Guthaben leer.
+        (lambda r: httpx2.Response(402, json=gemini_error(402)), "upstream_limited"),
+        (lambda r: httpx2.Response(401, json=gemini_error(401)), "upstream_error"),
+        (lambda r: httpx2.Response(400, json=gemini_error(400)), "upstream_error"),
         (lambda r: httpx2.Response(200, content=b"<html>gateway</html>"), "upstream_error"),
-        (lambda r: httpx2.Response(200, json={"choices": []}), "upstream_error"),
+        (lambda r: httpx2.Response(200, json={"object": "chat.completion"}), "upstream_error"),
         (lambda r: httpx2.Response(200, json=completion(content=["teil"])), "upstream_error"),
         (lambda r: httpx2.Response(200, content=b"x" * (1024 * 1024 + 10)), "upstream_error"),
         (raise_connect, "upstream_error"),
@@ -520,7 +593,7 @@ def raise_with(error_type):
 
 def expected_estimate(body) -> int:
     chars = sum(len(m["content"]) for m in body["messages"])
-    prices = Prices(input=Decimal("0.40"), cached_input=Decimal("0.10"), output=Decimal("1.60"))
+    prices = Prices(input=Decimal("0.25"), cached_input=Decimal("0.025"), output=Decimal("1.50"))
     return estimate_micros(chars, 2048, prices)
 
 
@@ -554,8 +627,10 @@ def test_an_abort_after_sending_books_the_estimate(llm, reply, status):
         (raise_with(httpx2.ConnectError), "upstream_error"),
         (raise_with(httpx2.ConnectTimeout), "timeout"),
         (raise_with(httpx2.PoolTimeout), "timeout"),
-        (lambda r: httpx2.Response(500, json={"error": {"message": "intern"}}), "upstream_error"),
-        (lambda r: httpx2.Response(401, json={"error": {"code": "invalid_api_key"}}), "upstream_error"),
+        (lambda r: httpx2.Response(500, json=gemini_error(500)), "upstream_error"),
+        (lambda r: httpx2.Response(401, json=gemini_error(401)), "upstream_error"),
+        (lambda r: httpx2.Response(402, json=gemini_error(402)), "upstream_limited"),
+        (lambda r: httpx2.Response(429, json=gemini_error(429)), "upstream_limited"),
     ],
 )
 def test_no_connection_or_an_error_answer_books_nothing(llm, reply, status):
@@ -571,7 +646,7 @@ def test_no_connection_or_an_error_answer_books_nothing(llm, reply, status):
 
 def test_an_unreachable_provider_does_not_empty_the_budget(llm):
     client, make = llm
-    upstream, ledger = ready(make, upstream=Upstream(raise_with(httpx2.ConnectError)), llm_budget_day_eur="0.002")
+    upstream, ledger = ready(make, upstream=Upstream(raise_with(httpx2.ConnectError)), llm_budget_day_usd="0.0007")
     codes = {post(client, exec_request("id")).status_code for _ in range(20)}
     assert codes == {502}
     assert upstream.calls == 20
@@ -580,15 +655,14 @@ def test_an_unreachable_provider_does_not_empty_the_budget(llm):
 def test_a_provider_429_is_not_passed_on_as_429(llm):
     """429 heißt auf dem Sensor nur Minutengrenze."""
     client, make = llm
-    limit = {"error": {"message": "limit", "code": "project_spend_limit_exceeded"}}
-    upstream, ledger = ready(make, upstream=Upstream(lambda r: httpx2.Response(429, json=limit)))
+    upstream, ledger = ready(make, upstream=Upstream(lambda r: httpx2.Response(429, json=gemini_error(429))))
     limited = post(client, exec_request("id"))
     assert limited.status_code == 502
     [row] = ledger.rows
     assert row.status == "upstream_limited"
     assert row.cost_micros == 0
     # Für den Sensor derselbe Rumpf wie bei jedem anderen Fehler beim Anbieter.
-    upstream.reply = lambda r: httpx2.Response(500, json={"error": {"message": "intern"}})
+    upstream.reply = lambda r: httpx2.Response(500, json=gemini_error(500))
     other = post(client, exec_request("id"))
     assert other.status_code == 502
     assert limited.json() == other.json()
@@ -598,7 +672,7 @@ def test_a_provider_429_is_not_passed_on_as_429(llm):
 def test_only_the_minute_limit_answers_429(llm):
     client, make = llm
     clock = [100.0]
-    upstream, ledger = Upstream(), MemoryLedger(day=1_999_000)
+    upstream, ledger = Upstream(), MemoryLedger(day=1_999_700)
     make(llm_settings(llm_calls_per_minute=1), ledger=ledger, upstream=upstream, monotonic=lambda: clock[0])
     assert post(client, exec_request("id")).status_code == 200  # Tagesbudget danach erschöpft
     assert post(client, exec_request("id")).status_code == 503
@@ -613,11 +687,209 @@ def test_only_the_minute_limit_answers_429(llm):
 def test_usage_on_a_broken_answer_still_counts(llm):
     client, make = llm
     broken = completion()
-    broken["choices"] = []
+    broken["choices"] = [{"index": 0, "message": "kein Objekt", "finish_reason": "stop"}]
     upstream, ledger = ready(make, upstream=Upstream(lambda r: httpx2.Response(200, json=broken)))
     post(client, exec_request("id"))
     assert ledger.rows[0].status == "upstream_error"
-    assert ledger.rows[0].cost_micros == 1005
+    assert ledger.rows[0].cost_micros == CALL_COST
+
+
+# --- Gesperrte Antworten (E-045) ------------------------------------------------
+
+
+def blocked_choice(finish_reason: str) -> dict:
+    return completion(None, completion_tokens=0, finish_reason=finish_reason)
+
+
+def prompt_blocked() -> dict:
+    body = completion(completion_tokens=0)
+    body["choices"] = []
+    return body
+
+
+def prompt_feedback() -> dict:
+    body = completion(completion_tokens=0)
+    body["prompt_feedback"] = {"block_reason": "PROHIBITED_CONTENT"}
+    return body
+
+
+@pytest.mark.parametrize(
+    ("reply", "block"),
+    [
+        (blocked_choice("content_filter"), "sonst"),
+        (blocked_choice("content_filter: RECITATION"), "recitation"),
+        (blocked_choice("content_filter: PROHIBITED_CONTENT"), "prohibited_content"),
+        (blocked_choice("content_filter: frei erfundener Text vom Anbieter"), "sonst"),
+        (prompt_blocked(), "prompt"),
+        (prompt_feedback(), "prompt"),
+    ],
+)
+def test_a_blocked_answer_is_502_with_its_own_status(llm, caplog, reply, block):
+    client, make = llm
+    upstream, ledger = ready(make, upstream=Upstream(lambda r: httpx2.Response(200, json=reply)))
+    with caplog.at_level(logging.INFO, logger="lab.llm"):
+        response = post(client, exec_request("wget hxxp://192.0.2.10/x.sh"))
+    assert response.status_code == 502
+    [row] = ledger.rows
+    assert row.status == "upstream_blocked"
+    # Abgerechnet wird, was usage meldet: die Eingabe.
+    assert row.cost_micros == CALL_COST - 30
+    [record] = [r for r in caplog.records if r.getMessage() == "llm"]
+    assert record.block == block
+    assert record.finish_reason == "content_filter"
+    assert "erfundener" not in all_log_text(caplog)
+
+
+def test_a_blocked_answer_looks_like_any_provider_error_to_the_sensor(llm):
+    """Der Sensor bleibt unverändert: 502 und derselbe Rumpf wie upstream_error."""
+    client, make = llm
+    upstream, ledger = ready(make, upstream=Upstream(lambda r: httpx2.Response(200, json=blocked_choice("content_filter"))))
+    blocked = post(client, exec_request("id"))
+    upstream.reply = lambda r: httpx2.Response(500, json=gemini_error(500))
+    failed = post(client, exec_request("id"))
+    assert blocked.status_code == failed.status_code == 502
+    assert blocked.json() == failed.json()
+    assert cowrie_reads(blocked.status_code, blocked.content) == ""
+    assert ledger.statuses == ["upstream_blocked", "upstream_error"]
+
+
+def test_a_blocked_answer_without_usage_books_the_estimate(llm):
+    client, make = llm
+    reply = completion(None, finish_reason="content_filter", usage=False)
+    upstream, ledger = ready(make, upstream=Upstream(lambda r: httpx2.Response(200, json=reply)))
+    body = exec_request("id")
+    post(client, body)
+    [row] = ledger.rows
+    assert row.status == "upstream_blocked"
+    assert row.cost_micros == expected_estimate(body)
+
+
+# --- Leere Antworten und leere Eingaben (E-044, E-045) --------------------------
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        completion(""),
+        completion(None),
+        # Das Denken hat max_tokens aufgebraucht: leer, aber bezahlt.
+        completion(None, completion_tokens=0, thoughts=2048, finish_reason="length"),
+    ],
+)
+def test_an_empty_answer_is_ok_with_empty_text(llm, caplog, reply):
+    client, make = llm
+    upstream, ledger = ready(make, upstream=Upstream(lambda r: httpx2.Response(200, json=reply)))
+    with caplog.at_level(logging.INFO, logger="lab.llm"):
+        response = post(client, exec_request("cd /tmp"))
+    assert response.status_code == 200
+    assert cowrie_reads(200, response.content) == ""
+    assert ledger.statuses == ["ok"]
+    [record] = [r for r in caplog.records if r.getMessage() == "llm"]
+    assert record.leer is True
+
+
+def test_an_empty_line_is_answered_without_the_provider(llm):
+    """Gemini nimmt leeren Text nicht an; eine echte Shell gibt nichts aus."""
+    client, make = llm
+    upstream, ledger = ready(make)
+    for body in (interactive_request(["User: "]), interactive_request(["User: id", "System: uid=0(root)", "User:    "])):
+        response = post(client, body)
+        assert response.status_code == 200
+        assert cowrie_reads(200, response.content) == ""
+    assert upstream.calls == 0
+    assert ledger.statuses == ["local_empty", "local_empty"]
+    assert all(r.cost_micros == 0 and r.latency_ms is None for r in ledger.rows)
+
+
+def test_an_empty_exec_command_is_answered_without_the_provider(llm):
+    """Ohne Befehl nimmt Cowrie den interaktiven Prompt und hängt nichts an."""
+    client, make = llm
+    upstream, ledger = ready(make)
+    for command in ("", "   "):
+        response = post(client, exec_request(command))
+        assert response.status_code == 200
+        assert cowrie_reads(200, response.content) == ""
+    assert upstream.calls == 0
+    assert ledger.statuses == ["local_empty", "local_empty"]
+
+
+def test_local_answers_do_not_use_the_minute_limit(llm):
+    client, make = llm
+    upstream, ledger = ready(make, llm_calls_per_minute=1)
+    assert post(client, interactive_request(["User: "])).status_code == 200
+    assert post(client, exec_request("id")).status_code == 200
+    assert upstream.calls == 1
+
+
+def test_empty_messages_in_the_history_are_left_out(llm):
+    client, make = llm
+    upstream, _ = ready(make)
+    body = interactive_request(["User: ", "User: cd /tmp", "System: ", "User: ls"])
+    assert post(client, body).status_code == 200
+    assert upstream.payload()["messages"] == [
+        {"role": "system", "content": system_context()},
+        {"role": "user", "content": "cd /tmp"},
+        {"role": "user", "content": "ls"},
+    ]
+
+
+# --- Aufeinanderfolgende user-Nachrichten (LLM_MERGE_TURNS) ----------------------
+
+# Cowrie hängt keine leere Antwort an: nach "cd /tmp" folgt direkt "ls".
+TWO_USERS = ["User: echo eins", "System: eins", "User: cd /tmp", "User: ls"]
+
+
+def test_two_user_messages_in_a_row_are_sent_as_they_are(llm):
+    client, make = llm
+    upstream, _ = ready(make)
+    assert post(client, interactive_request(TWO_USERS)).status_code == 200
+    assert [m["role"] for m in upstream.payload()["messages"]] == ["system", "user", "assistant", "user", "user"]
+
+
+def test_if_gemini_refuses_two_user_messages_the_switch_merges_them(llm):
+    """Falls die Probe "verlauf" am echten Anbieter scheitert (server/README.md)."""
+    client, make = llm
+    strict = Upstream(strict_turns=True)
+    upstream, ledger = ready(make, upstream=strict)
+    assert post(client, interactive_request(TWO_USERS)).status_code == 502
+    assert ledger.statuses == ["upstream_error"]
+
+    merged = Upstream(strict_turns=True)
+    ready(make, upstream=merged, llm_merge_turns=True)
+    assert post(client, interactive_request(TWO_USERS)).status_code == 200
+    assert merged.payload()["messages"][1:] == [
+        {"role": "user", "content": "echo eins"},
+        {"role": "assistant", "content": "eins"},
+        {"role": "user", "content": "cd /tmp\nls"},
+    ]
+
+
+# --- Weigerungen (E-045) --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("content", "refusal"),
+    [
+        ("I'm sorry, but I can't help with that.", True),
+        ("As an AI language model, I cannot run commands.", True),
+        (ANSWER, False),
+        ("", False),
+    ],
+)
+def test_a_refusal_is_marked_without_text(llm, caplog, content, refusal):
+    client, make = llm
+    upstream, ledger = ready(make, upstream=Upstream(lambda r: httpx2.Response(200, json=completion(content))))
+    with caplog.at_level(logging.INFO, logger="lab.llm"):
+        response = post(client, exec_request("xmrig --donate-level 1"))
+    # Die Antwort geht trotzdem an Cowrie: Sie gehört zur Behandlung.
+    assert response.status_code == 200
+    assert cowrie_reads(200, response.content) == content
+    [row] = ledger.rows
+    assert row.status == "ok" and row.refusal is refusal
+    [record] = [r for r in caplog.records if r.getMessage() == "llm"]
+    assert record.weigerung is refusal
+    if content:
+        assert content not in all_log_text(caplog)
 
 
 # --- Kein Inhalt in Logs und Antworten -----------------------------------------
@@ -633,7 +905,10 @@ def all_log_text(caplog) -> str:
     "reply",
     [
         lambda r: httpx2.Response(200, json=completion(f"{MARKER} antwort")),
+        lambda r: httpx2.Response(200, json=completion(f"I'm sorry {MARKER}")),
+        lambda r: httpx2.Response(200, json=completion(MARKER, finish_reason=f"content_filter: {MARKER}")),
         lambda r: httpx2.Response(500, text=f"interner Fehler bei {MARKER}"),
+        lambda r: httpx2.Response(400, json=gemini_error(400, f"bad request: {MARKER}")),
         lambda r: httpx2.Response(400, json={"error": {"message": f"bad request: {MARKER}"}}),
         lambda r: httpx2.Response(200, text=f"kein json {MARKER}"),
         lambda r: (_ for _ in ()).throw(httpx2.ConnectError(f"fehler {MARKER}", request=r)),
@@ -748,22 +1023,6 @@ def test_the_largest_interactive_request_gets_through(llm, char):
     response = post(client, body)
     assert response.status_code == 200, response.text
     assert upstream.calls == 1
-
-
-def test_an_empty_line_in_an_interactive_session_gets_through(llm):
-    """Cowrie schickt auch eine leere Zeile ans Modell (Behandlung, E-044)."""
-    client, make = llm
-    upstream, _ = ready(make)
-    response = post(client, interactive_request(["User: "]))
-    assert response.status_code == 200
-    assert upstream.payload()["messages"][-1] == {"role": "user", "content": ""}
-
-
-def test_an_empty_exec_command_gets_through(llm):
-    """Ohne Befehl nimmt Cowrie den interaktiven Prompt und hängt nichts an."""
-    client, make = llm
-    ready(make)
-    assert post(client, exec_request("")).status_code == 200
 
 
 @pytest.mark.parametrize(

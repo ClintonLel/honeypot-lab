@@ -17,6 +17,10 @@ Erwartet wird genau die Form, die Cowrie 3.0.14 schickt
   Exec zuletzt der Befehl. Exec-Anfragen bestehen nur aus dieser Nachricht.
 - Interaktive Sitzungen schicken danach höchstens zehn Einträge Verlauf
   (``user``/``assistant``), der letzte ist der neue Befehl.
+
+Geprüft wird immer Cowries Form. Was an den Anbieter geht, baut erst
+``app.llm_provider`` daraus (E-045); dafür liefert die Prüfung den
+System-Prompt ohne den Befehl und den Befehl getrennt.
 """
 
 from __future__ import annotations
@@ -120,10 +124,30 @@ class CheckedRequest:
     persona_sha256: str
     # Zeichen über alle Nachrichten, für die Kostenschätzung.
     chars: int
+    # System-Prompt bis einschließlich Verzeichnis, ohne den Exec-Befehl. Bei
+    # interaktiven Anfragen der ganze System-Prompt.
+    system_head: str = ""
+    # Der Exec-Befehl hinter " The command to execute is: ", sonst None.
+    command: str | None = None
+
+
+@dataclass(frozen=True)
+class SystemParts:
+    """Ein System-Prompt in Cowries Form, zerlegt."""
+
+    persona: str
+    # Bis einschließlich "'." hinter dem Verzeichnis.
+    head: str
+    command: str | None
 
 
 def persona_of(system: str) -> str:
-    """Prüft den System-Prompt auf Cowries Form und gibt den Persona-Teil zurück.
+    """Prüft den System-Prompt auf Cowries Form und gibt den Persona-Teil zurück."""
+    return split_system(system).persona
+
+
+def split_system(system: str) -> SystemParts:
+    """Prüft den System-Prompt auf Cowries Form und zerlegt ihn.
 
     Getrennt wird am ersten Vorkommen des Guidance-Satzes. Der Befehl am Ende
     ist Angreifertext und darf den Satz oder das Hostname-Muster selbst
@@ -157,12 +181,17 @@ def persona_of(system: str) -> str:
     if end < 0 or not cwd.startswith("/") or not _plain(cwd, CWD_CHARS, MAX_CWD_CHARS):
         raise RequestRejected("herkunft")
 
-    tail = rest[end + len(_CWD_END) :]
+    head_end = cut + len(COWRIE_GUIDANCE) + end + len(_CWD_END)
+    tail = system[head_end:]
     if tail and not (
         tail.startswith(_COMMAND) and len(tail) - len(_COMMAND) <= MAX_COMMAND_CHARS
     ):
         raise RequestRejected("herkunft")
-    return persona
+    return SystemParts(
+        persona=persona,
+        head=system[:head_end],
+        command=tail[len(_COMMAND) :] if tail else None,
+    )
 
 
 def _plain(value: str, allowed: frozenset[str], longest: int) -> bool:
@@ -216,7 +245,8 @@ def parse_request(body: bytes, pinned_sha256: str = "") -> CheckedRequest:
     if chars > MAX_TOTAL_CHARS:
         raise RequestRejected("zu_gross")
 
-    digest = persona_sha256(persona_of(messages[0].content))
+    parts = split_system(messages[0].content)
+    digest = persona_sha256(parts.persona)
     if pinned_sha256 and digest != pinned_sha256:
         raise RequestRejected("prompt_hash", persona_sha256=digest)
 
@@ -224,4 +254,6 @@ def parse_request(body: bytes, pinned_sha256: str = "") -> CheckedRequest:
         messages=[{"role": m.role, "content": m.content} for m in messages],
         persona_sha256=digest,
         chars=chars,
+        system_head=parts.head,
+        command=parts.command,
     )

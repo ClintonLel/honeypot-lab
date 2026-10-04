@@ -1,4 +1,7 @@
-"""Kosten, Budget und Minutengrenze des LLM-Gateways (Schritt 7.2, E-043).
+"""Kosten, Budget und Minutengrenze des LLM-Gateways (Schritt 7.2, E-043, E-045).
+
+Kosten und Budgets in US-Dollar, wie Googles Preise (E-045). ``cost_micros``
+heißt Millionstel Dollar.
 
 Budget und Minutengrenze leben im Speicher dieses Prozesses, wie Stream und
 Rate-Limit (E-029). Uvicorn läuft mit einem Prozess; mit mehreren hätte jeder
@@ -30,7 +33,10 @@ CHARS_PER_TOKEN_ESTIMATE = 3
 
 @dataclass(frozen=True)
 class Prices:
-    """Euro je eine Million Tokens. Das ist zugleich Mikro-Euro je Token."""
+    """US-Dollar je eine Million Tokens. Das ist zugleich Mikro-Dollar je Token.
+
+    ``output`` gilt auch für Denk-Tokens (E-045).
+    """
 
     input: Decimal
     cached_input: Decimal
@@ -40,10 +46,13 @@ class Prices:
 @dataclass(frozen=True)
 class Usage:
     prompt_tokens: int = 0
+    # Abgerechnete Ausgabe, Denk-Tokens eingeschlossen.
     completion_tokens: int = 0
     total_tokens: int = 0
     # Teil von prompt_tokens aus dem Zwischenspeicher des Anbieters.
     cached_tokens: int = 0
+    # Teil von completion_tokens, den das Modell zum Denken brauchte.
+    reasoning_tokens: int = 0
 
 
 def _count(value: Any) -> int | None:
@@ -55,10 +64,16 @@ def _count(value: Any) -> int | None:
 def parse_usage(payload: Any) -> Usage | None:
     """Liest ``usage`` aus der Antwort des Anbieters. ``None``, wenn es fehlt.
 
-    Zwischengespeicherte Tokens stehen bei OpenAI in
-    ``prompt_tokens_details.cached_tokens``, bei manchen anderen Anbietern in
-    ``prompt_cache_hit_tokens``. In beiden Fällen sind sie in
-    ``prompt_tokens`` enthalten.
+    Wie Geminis kompatibler Endpunkt Denk-Tokens meldet, ist nicht
+    dokumentiert (E-045). Zwei Lesarten kommen vor: Sie stecken wie bei
+    OpenAI in ``completion_tokens`` (und ``total_tokens`` ist Eingabe plus
+    Ausgabe), oder sie fehlen dort und stecken nur in ``total_tokens``.
+    Abgerechnet wird deshalb ``max(completion_tokens, total_tokens -
+    prompt_tokens)``; ohne ``total_tokens`` ``completion_tokens`` plus
+    ``completion_tokens_details.reasoning_tokens``. Das bucht im Zweifel
+    mehr, nie weniger. Zwischengespeicherte Tokens stehen in
+    ``prompt_tokens_details.cached_tokens`` und sind in ``prompt_tokens``
+    enthalten.
     """
     if not isinstance(payload, dict):
         return None
@@ -69,30 +84,37 @@ def parse_usage(payload: Any) -> Usage | None:
     completion = _count(usage.get("completion_tokens"))
     if prompt is None or completion is None:
         return None
+    reasoning = _detail(usage, "completion_tokens_details", "reasoning_tokens")
     total = _count(usage.get("total_tokens"))
-    if total is None:
-        total = min(prompt + completion, INT4_MAX)
-    cached = None
-    details = usage.get("prompt_tokens_details")
-    if isinstance(details, dict):
-        cached = _count(details.get("cached_tokens"))
-    if cached is None:
-        cached = _count(usage.get("prompt_cache_hit_tokens"))
+    if total is not None:
+        output = max(completion, total - prompt)
+    else:
+        output = completion + (reasoning or 0)
+    output = min(output, INT4_MAX)
+    thoughts = reasoning if reasoning is not None else output - completion
+    cached = _detail(usage, "prompt_tokens_details", "cached_tokens")
     return Usage(
         prompt_tokens=prompt,
-        completion_tokens=completion,
-        total_tokens=total,
+        completion_tokens=output,
+        total_tokens=min(max(total or 0, prompt + output), INT4_MAX),
         cached_tokens=min(cached or 0, prompt),
+        reasoning_tokens=min(thoughts, output),
     )
 
 
+def _detail(usage: dict[str, Any], group: str, key: str) -> int | None:
+    details = usage.get(group)
+    return _count(details.get(key)) if isinstance(details, dict) else None
+
+
 def _micros(amount: Decimal) -> int:
-    # Aufrunden: Lieber einen Mikro-Euro zu viel zählen als zu wenig.
+    # Aufrunden: Lieber einen Mikro-Dollar zu viel zählen als zu wenig.
     return int(amount.to_integral_value(rounding=ROUND_CEILING))
 
 
 def cost_micros(usage: Usage, prices: Prices) -> int:
-    """Kosten eines Aufrufs in Millionstel Euro."""
+    """Kosten eines Aufrufs in Millionstel Dollar. Denk-Tokens stecken in
+    ``completion_tokens`` und kosten wie Ausgabe."""
     uncached = usage.prompt_tokens - usage.cached_tokens
     return _micros(
         uncached * prices.input
@@ -107,7 +129,7 @@ def estimate_micros(chars: int, max_tokens: int, prices: Prices) -> int:
     Bei einer Zeitüberschreitung rechnet der Anbieter trotzdem ab. Ohne
     Schätzung könnte ein langsamer Anbieter das Budget unbemerkt leeren.
     Angenommen werden: alle Eingabe-Tokens ohne Zwischenspeicher und die
-    volle Ausgabe.
+    volle Ausgabe; die Ausgabegrenze schließt Denk-Tokens ein.
     """
     input_tokens = -(-chars // CHARS_PER_TOKEN_ESTIMATE)
     return _micros(input_tokens * prices.input + max_tokens * prices.output)
@@ -125,12 +147,12 @@ def day_start(now: datetime) -> datetime:
     return _utc(now).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-# Liest die Summe der Kosten ab Monats- und ab Tagesanfang, in Mikro-Euro.
+# Liest die Summe der Kosten ab Monats- und ab Tagesanfang, in Mikro-Dollar.
 SpentReader = Callable[[datetime, datetime], Awaitable[tuple[int, int]]]
 
 
 class Budget:
-    """Ausgaben des laufenden Monats und Tages (UTC) in Mikro-Euro."""
+    """Ausgaben des laufenden Monats und Tages (UTC) in Mikro-Dollar."""
 
     def __init__(self, month_micros: int, day_micros: int) -> None:
         self.month_limit = month_micros

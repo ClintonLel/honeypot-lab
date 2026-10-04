@@ -50,11 +50,8 @@ _LLM_LENIENT = (
     "llm_max_tokens",
     "llm_temperature",
     "llm_timeout_seconds",
-    "llm_price_input_eur",
-    "llm_price_cached_input_eur",
-    "llm_price_output_eur",
-    "llm_budget_month_eur",
-    "llm_budget_day_eur",
+    "llm_budget_month_usd",
+    "llm_budget_day_usd",
     "llm_calls_per_minute",
 )
 
@@ -88,26 +85,29 @@ class Settings(BaseSettings):
 
     ipinfo_token: SecretStr = SecretStr("")
 
-    # LLM-Gateway (Schritt 7.2, E-043). Keiner dieser Werte darf den Start
-    # verhindern, Ingest und Statistik laufen auch ohne Gateway. Was sich
-    # nicht lesen lässt, wird zu None; leer heißt Vorgabe. Wertebereiche prüft
-    # das Gateway selbst und antwortet mit 503, solange etwas nicht stimmt.
+    # LLM-Gateway (Schritt 7.2, E-043, Anbieter Gemini seit E-045). Keiner
+    # dieser Werte darf den Start verhindern, Ingest und Statistik laufen auch
+    # ohne Gateway. Was sich nicht lesen lässt, wird zu None; leer heißt
+    # Vorgabe. Wertebereiche prüft das Gateway selbst und antwortet mit 503,
+    # solange etwas nicht stimmt. Adresse und Preise des Anbieters stehen fest
+    # in app/llm_provider.py, nicht hier.
     llm_api_key: SecretStr = SecretStr("")
     llm_gateway_token: SecretStr = SecretStr("")
     llm_gateway_enabled: bool = False
-    llm_base_url: str = ""
+    # Eine Modell-ID aus app.llm_provider.MODELS.
     llm_model: str = ""
     llm_max_tokens: int | None = 2048
-    llm_max_tokens_param: str = "max_completion_tokens"
-    llm_temperature: float | None = 0.0
+    # Googles Vorgabe für Gemini 3; darunter drohen Schleifen (E-045).
+    llm_temperature: float | None = 1.0
     llm_timeout_seconds: float | None = 30.0
-    # Euro je eine Million Tokens. Ohne Vorgabe: Wer keine Preise einträgt,
-    # bekommt kein Gateway, denn ohne Preise greift kein Budget.
-    llm_price_input_eur: Decimal | None = None
-    llm_price_cached_input_eur: Decimal | None = None
-    llm_price_output_eur: Decimal | None = None
-    llm_budget_month_eur: Decimal | None = None
-    llm_budget_day_eur: Decimal | None = None
+    # So wenig Denken wie das Modell erlaubt (E-045).
+    llm_reasoning_effort: str = "minimal"
+    # Aufeinanderfolgende Nachrichten derselben Rolle zusammenfassen, falls
+    # Gemini sie ablehnt (Probe "verlauf", server/README.md).
+    llm_merge_turns: bool = False
+    # US-Dollar. Ohne Vorgabe: Wer keine Budgets einträgt, bekommt kein Gateway.
+    llm_budget_month_usd: Decimal | None = None
+    llm_budget_day_usd: Decimal | None = None
     llm_calls_per_minute: int | None = 60
     # SHA-256 des Persona-Teils im System-Prompt. Leer heißt: nicht gepinnt.
     llm_prompt_sha256: str = ""
@@ -141,7 +141,15 @@ class Settings(BaseSettings):
         except ValidationError:
             return None
 
-    @field_validator("llm_gateway_enabled", mode="wrap")
+    @field_validator("llm_reasoning_effort", mode="before")
+    @classmethod
+    def _default_effort(cls, value: Any) -> Any:
+        """Leer heißt Vorgabe, wie bei den Zahlen."""
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return cls.model_fields["llm_reasoning_effort"].default
+        return value
+
+    @field_validator("llm_gateway_enabled", "llm_merge_turns", mode="wrap")
     @classmethod
     def _lenient_switch(cls, value: Any, handler: ValidatorFunctionWrapHandler) -> bool:
         """Ein unlesbarer Schalter gilt als aus."""

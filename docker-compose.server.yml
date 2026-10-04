@@ -85,23 +85,22 @@ services:
       IP_HMAC_KEY: ${IP_HMAC_KEY:?IP_HMAC_KEY fehlt in der .env}
       INGEST_TOKEN: ${INGEST_TOKEN:?INGEST_TOKEN fehlt in der .env}
       IPINFO_DB_PATH: /data/ipinfo.mmdb
-      # LLM-Gateway (Schritt 7.2, E-043). Alles optional: Fehlt etwas oder ist
-      # es ungültig, startet die API trotzdem, nur das Gateway antwortet mit
-      # 503. Bedeutung und Vorgaben stehen in .env.example und server/README.md.
+      # LLM-Gateway (Schritt 7.2, E-043, Gemini seit E-045). Alles optional:
+      # Fehlt etwas oder ist es ungültig, startet die API trotzdem, nur das
+      # Gateway antwortet mit 503. Bedeutung und Vorgaben stehen in
+      # .env.example und server/README.md. Adresse und Preise des Anbieters
+      # stehen fest im Code (app/llm_provider.py).
       LLM_GATEWAY_ENABLED: ${LLM_GATEWAY_ENABLED:-false}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_GATEWAY_TOKEN: ${LLM_GATEWAY_TOKEN:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-}
-      LLM_MAX_TOKENS_PARAM: ${LLM_MAX_TOKENS_PARAM:-max_completion_tokens}
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-}
+      LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-}
+      LLM_MERGE_TURNS: ${LLM_MERGE_TURNS:-false}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-}
-      LLM_PRICE_INPUT_EUR: ${LLM_PRICE_INPUT_EUR:-}
-      LLM_PRICE_CACHED_INPUT_EUR: ${LLM_PRICE_CACHED_INPUT_EUR:-}
-      LLM_PRICE_OUTPUT_EUR: ${LLM_PRICE_OUTPUT_EUR:-}
-      LLM_BUDGET_MONTH_EUR: ${LLM_BUDGET_MONTH_EUR:-}
-      LLM_BUDGET_DAY_EUR: ${LLM_BUDGET_DAY_EUR:-}
+      LLM_BUDGET_MONTH_USD: ${LLM_BUDGET_MONTH_USD:-}
+      LLM_BUDGET_DAY_USD: ${LLM_BUDGET_DAY_USD:-}
       LLM_CALLS_PER_MINUTE: ${LLM_CALLS_PER_MINUTE:-}
       LLM_PROMPT_SHA256: ${LLM_PROMPT_SHA256:-}
     depends_on:
