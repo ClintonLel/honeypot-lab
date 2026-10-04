@@ -75,7 +75,32 @@ def test_history_without_answers_is_fine():
 def test_an_empty_exec_command_has_no_command_part():
     body = exec_request("")
     assert "The command to execute is" not in body["messages"][0]["content"]
-    assert parse_request(encode(body)).persona_sha256 == PERSONA_HASH
+    checked = parse_request(encode(body))
+    assert checked.persona_sha256 == PERSONA_HASH
+    assert checked.command is None
+    assert checked.system_head == body["messages"][0]["content"]
+
+
+def test_an_exec_request_is_split_at_cowries_command_sentence():
+    """Gemini bekommt den Befehl als user-Nachricht (E-045); der Hash bleibt."""
+    checked = parse_request(encode(exec_request("uname -a")))
+    assert checked.command == "uname -a"
+    assert checked.system_head == system_context()
+    assert checked.persona_sha256 == PERSONA_HASH
+
+
+def test_exec_and_interactive_have_the_same_head():
+    exec_checked = parse_request(encode(exec_request("id; uname -a")))
+    interactive_checked = parse_request(encode(interactive_request(["User: id"])))
+    assert exec_checked.system_head == interactive_checked.system_head
+    assert interactive_checked.command is None
+
+
+def test_the_split_keeps_every_character_of_the_command():
+    command = " The command to execute is: x '. \n\ttail "
+    checked = parse_request(encode(exec_request(command)))
+    assert checked.command == command
+    assert checked.system_head + " The command to execute is: " + checked.command == exec_request(command)["messages"][0]["content"]
 
 
 @pytest.mark.parametrize(

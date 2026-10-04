@@ -42,11 +42,53 @@ def test_openai_usage_with_cached_tokens():
     assert usage == Usage(prompt_tokens=8000, completion_tokens=120, total_tokens=8120, cached_tokens=7424)
 
 
-def test_cache_hits_in_the_other_common_form():
+def test_only_the_openai_form_of_cache_hits_counts():
+    """Gemini meldet den Cache wie OpenAI; andere Formen zählen nicht (E-045)."""
     usage = parse_usage(
         {"usage": {"prompt_tokens": 100, "completion_tokens": 5, "prompt_cache_hit_tokens": 64}}
     )
-    assert usage == Usage(prompt_tokens=100, completion_tokens=5, total_tokens=105, cached_tokens=64)
+    assert usage == Usage(prompt_tokens=100, completion_tokens=5, total_tokens=105, cached_tokens=0)
+
+
+THINKING = Usage(prompt_tokens=8000, completion_tokens=320, total_tokens=8320, cached_tokens=7424, reasoning_tokens=300)
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        # Denk-Tokens nur in total_tokens.
+        {"prompt_tokens": 8000, "completion_tokens": 20, "total_tokens": 8320},
+        # Wie OpenAI: in completion_tokens und einzeln ausgewiesen.
+        {
+            "prompt_tokens": 8000,
+            "completion_tokens": 320,
+            "total_tokens": 8320,
+            "completion_tokens_details": {"reasoning_tokens": 300},
+        },
+        # Einzeln ausgewiesen, aber nicht in completion_tokens.
+        {
+            "prompt_tokens": 8000,
+            "completion_tokens": 20,
+            "total_tokens": 8320,
+            "completion_tokens_details": {"reasoning_tokens": 300},
+        },
+        # Ohne total_tokens: im Zweifel dazuzählen.
+        {"prompt_tokens": 8000, "completion_tokens": 20, "completion_tokens_details": {"reasoning_tokens": 300}},
+    ],
+)
+def test_thinking_tokens_are_part_of_the_output_in_every_form(usage):
+    usage = dict(usage, prompt_tokens_details={"cached_tokens": 7424})
+    assert parse_usage({"usage": usage}) == THINKING
+
+
+def test_a_total_below_prompt_and_completion_changes_nothing():
+    usage = parse_usage({"usage": {"prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 50}})
+    assert usage == Usage(prompt_tokens=100, completion_tokens=5, total_tokens=105)
+
+
+def test_thinking_tokens_cost_like_output():
+    plain = Usage(prompt_tokens=8000, completion_tokens=20, total_tokens=8020, cached_tokens=7424)
+    assert cost_micros(THINKING, PRICES) - cost_micros(plain, PRICES) == 300 * 1.6
 
 
 def test_usage_without_cache_details_counts_nothing_as_cached():
@@ -90,7 +132,7 @@ def test_absurd_numbers_are_capped_for_the_database():
 
 def test_cached_tokens_are_charged_at_the_cache_price():
     usage = Usage(prompt_tokens=8000, completion_tokens=120, total_tokens=8120, cached_tokens=7424)
-    # 576 × 0,40 + 7.424 × 0,10 + 120 × 1,60 = 230,4 + 742,4 + 192 = 1.164,8 µ€
+    # 576 × 0,40 + 7.424 × 0,10 + 120 × 1,60 = 230,4 + 742,4 + 192 = 1.164,8 µ$
     assert cost_micros(usage, PRICES) == 1165
 
 
@@ -104,12 +146,12 @@ def test_costs_are_rounded_up():
 
 
 def test_one_million_tokens_cost_the_price_per_million():
-    assert cost_micros(Usage(prompt_tokens=1_000_000), PRICES) == 400_000  # 0,40 €
+    assert cost_micros(Usage(prompt_tokens=1_000_000), PRICES) == 400_000  # 0,40 $
 
 
 def test_the_estimate_is_an_upper_bound():
     # 30.000 Zeichen → 10.000 Tokens ohne Cache, dazu die volle Ausgabe:
-    # 4.000 + 3.276,8 µ€, aufgerundet.
+    # 4.000 + 3.276,8 µ$, aufgerundet.
     assert estimate_micros(30_000, 2048, PRICES) == 7_277
     realistic = cost_micros(Usage(prompt_tokens=7_500, completion_tokens=300, cached_tokens=7_000), PRICES)
     assert estimate_micros(30_000, 2048, PRICES) > realistic

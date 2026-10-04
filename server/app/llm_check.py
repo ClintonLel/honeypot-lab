@@ -6,6 +6,13 @@ stimmt, zeigt ``input_ref``: Beide Seiten tragen den HMAC über den SHA-256
 desselben rohen Befehls. Wurde ein ``command.input`` der Sitzung abgelehnt,
 verschieben sich die Nummern, und der Abgleich schlägt an.
 
+Dazu unter ``gateway`` die Sicht des Gateways aus ``llm_usage`` (E-045): Zahl
+je Status, darunter gesperrte Antworten (``upstream_blocked``), die auf dem
+Sensor nur als ``upstream_error`` erscheinen; Weigerungen laut
+``app.llm_refusal``; die Cache-Quote (Summe ``cached_tokens`` / Summe
+``prompt_tokens``) und die Kosten im Zeitraum, hochgerechnet auf einen Monat.
+Die gebuchten Kosten enthalten die beobachtete Cache-Quote schon.
+
 Gibt nur Zähler aus, nie Befehle oder Antworten:
 
     python -m app.llm_check            # alles
@@ -58,8 +65,60 @@ OUTCOMES_SQL = text(
     """
 )
 
+USAGE_STATUS_SQL = text(
+    """
+    SELECT status, count(*) AS n FROM llm_usage
+    WHERE occurred_at >= :seit GROUP BY status ORDER BY status
+    """
+)
 
-def counts(connection: Connection, since: datetime, now: datetime) -> dict[str, Any]:
+# Aufrufe beim Anbieter haben eine Latenz; nur sie haben Tokens und Kosten.
+USAGE_SUMS_SQL = text(
+    """
+    SELECT
+      count(*) FILTER (WHERE latency_ms IS NOT NULL) AS anbieter,
+      count(*) FILTER (WHERE refusal) AS weigerungen,
+      coalesce(sum(cached_tokens), 0) AS cached,
+      coalesce(sum(prompt_tokens), 0) AS prompt,
+      coalesce(sum(cost_micros), 0) AS kosten,
+      min(occurred_at) AS erste
+    FROM llm_usage
+    WHERE occurred_at >= :seit
+    """
+)
+
+DAYS_PER_MONTH = 30.4
+
+
+def gateway_counts(
+    connection: Connection, since: datetime, now: datetime, days: float | None = None
+) -> dict[str, Any]:
+    """Status, Weigerungen, Cache-Quote und Kosten aus ``llm_usage``.
+
+    ``days`` ist die Länge des Zeitraums; ohne Angabe zählt er ab der ersten
+    Zeile. Kosten in US-Dollar (E-045).
+    """
+    params = {"seit": since}
+    status = {row.status: row.n for row in connection.execute(USAGE_STATUS_SQL, params)}
+    sums = connection.execute(USAGE_SUMS_SQL, params).mappings().one()
+    if days is None:
+        days = (now - sums["erste"]).total_seconds() / 86_400 if sums["erste"] else 0.0
+    cost = int(sums["kosten"]) / 1_000_000
+    per_day = sums["anbieter"] / days if days > 0 else None
+    return {
+        "status": status,
+        "weigerungen": sums["weigerungen"],
+        "cache_quote": round(int(sums["cached"]) / int(sums["prompt"]), 4) if sums["prompt"] else None,
+        "kosten_usd": round(cost, 6),
+        "tage": round(days, 3),
+        "aufrufe_je_tag": round(per_day, 1) if per_day is not None else None,
+        "kosten_je_monat_usd": round(cost / days * DAYS_PER_MONTH, 2) if days > 0 else None,
+    }
+
+
+def counts(
+    connection: Connection, since: datetime, now: datetime, days: float | None = None
+) -> dict[str, Any]:
     """Die Zähler des Abgleichs, ab ``since``."""
     params = {"seit": since}
     result: dict[str, Any] = dict(connection.execute(RESPONSES_SQL, params).mappings().one())
@@ -69,6 +128,7 @@ def counts(connection: Connection, since: datetime, now: datetime) -> dict[str, 
         ).mappings().one()
     )
     result["outcomes"] = {row.outcome: row.n for row in connection.execute(OUTCOMES_SQL, params)}
+    result["gateway"] = gateway_counts(connection, since, now, days)
     return result
 
 
@@ -84,7 +144,7 @@ def main(argv: list[str]) -> int:
     engine = create_engine(get_settings().database_url)
     try:
         with engine.connect() as connection:
-            result = counts(connection, since, now)
+            result = counts(connection, since, now, args.tage or None)
     finally:
         engine.dispose()
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

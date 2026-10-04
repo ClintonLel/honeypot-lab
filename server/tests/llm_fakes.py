@@ -3,6 +3,11 @@
 Kein Test ruft einen echten Anbieter. Die Attrappe hängt über
 ``httpx2.MockTransport`` direkt im Client des Gateways; eine Verbindung ins
 Netz entsteht nie.
+
+Die Attrappe spielt Geminis OpenAI-kompatiblen Endpunkt (E-045): Antworten
+mit Gemini-Feldern, Fehler als Liste ``[{"error": …}]``, und sie lehnt wie
+Gemini Anfragen ohne user-Nachricht und Nachrichten mit leerem Text ab, auf
+Wunsch auch zwei Nachrichten derselben Rolle in Folge (``strict_turns``).
 """
 
 from __future__ import annotations
@@ -24,8 +29,7 @@ GATEWAY_TOKEN = "g" * 64
 TEST_SECRET = "t" * 64
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
-BASE_URL = "https://llm.example.test/v1"
-MODEL = "test-model-mini"
+MODEL = "gemini-3.1-flash-lite"
 ANSWER = "Linux test-host 6.12.107+deb13-amd64 #1 SMP x86_64 GNU/Linux"
 
 
@@ -39,17 +43,14 @@ def llm_settings(**overrides: Any) -> Settings:
         "llm_gateway_enabled": True,
         "llm_api_key": API_KEY,
         "llm_gateway_token": GATEWAY_TOKEN,
-        "llm_base_url": BASE_URL,
         "llm_model": MODEL,
         "llm_max_tokens": 2048,
-        "llm_max_tokens_param": "max_completion_tokens",
-        "llm_temperature": 0.0,
+        "llm_temperature": 1.0,
+        "llm_reasoning_effort": "minimal",
+        "llm_merge_turns": False,
         "llm_timeout_seconds": 5,
-        "llm_price_input_eur": "0.40",
-        "llm_price_cached_input_eur": "0.10",
-        "llm_price_output_eur": "1.60",
-        "llm_budget_month_eur": "20",
-        "llm_budget_day_eur": "2",
+        "llm_budget_month_usd": "20",
+        "llm_budget_day_usd": "2",
         "llm_calls_per_minute": 60,
         "llm_prompt_sha256": "",
     }
@@ -94,46 +95,89 @@ def completion(
     prompt: int = 8000,
     cached: int = 7424,
     completion_tokens: int = 20,
+    thoughts: int = 0,
+    thoughts_in: str = "total",
     finish_reason: str = "stop",
     usage: bool = True,
 ) -> dict[str, Any]:
-    """Eine Antwort, wie OpenAI sie schickt, mit Feldern, die das Gateway nicht weitergibt."""
+    """Eine Antwort, wie Geminis kompatibler Endpunkt sie schickt.
+
+    ``thoughts_in`` ist eine der beiden Lesarten für Denk-Tokens (E-045):
+    ``"total"``: nicht in ``completion_tokens``, nur in ``total_tokens``;
+    ``"details"``: wie OpenAI in ``completion_tokens`` und dazu einzeln in
+    ``completion_tokens_details.reasoning_tokens``.
+    """
     body: dict[str, Any] = {
-        "id": "chatcmpl-anbieter-intern",
+        "id": "anbieter-interne-id",
         "object": "chat.completion",
         "created": 1_791_000_000,
-        "model": "anbieter-modell-2026-09-01",
-        "system_fingerprint": "fp_anbieter",
-        "service_tier": "default",
+        "model": "gemini-3.1-flash-lite-intern",
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": content, "refusal": None, "annotations": []},
-                "logprobs": None,
+                "message": {"role": "assistant", "content": content},
                 "finish_reason": finish_reason,
             }
         ],
     }
     if usage:
-        body["usage"] = {
-            "prompt_tokens": prompt,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt + completion_tokens,
-            "prompt_tokens_details": {"cached_tokens": cached, "audio_tokens": 0},
-            "completion_tokens_details": {"reasoning_tokens": 0},
-        }
+        if thoughts_in == "details":
+            body["usage"] = {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion_tokens + thoughts,
+                "total_tokens": prompt + completion_tokens + thoughts,
+                "prompt_tokens_details": {"cached_tokens": cached},
+                "completion_tokens_details": {"reasoning_tokens": thoughts},
+            }
+        else:
+            body["usage"] = {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt + completion_tokens + thoughts,
+                "prompt_tokens_details": {"cached_tokens": cached},
+            }
     return body
+
+
+def gemini_error(status: int, message: str = "fehler") -> list[dict[str, Any]]:
+    """Ein Fehlerrumpf, wie Geminis kompatibler Endpunkt ihn schickt: als Liste."""
+    names = {400: "INVALID_ARGUMENT", 402: "PAYMENT_REQUIRED", 429: "RESOURCE_EXHAUSTED", 500: "INTERNAL"}
+    return [{"error": {"code": status, "message": message, "status": names.get(status, "UNKNOWN")}}]
+
+
+def gemini_problem(payload: dict[str, Any], strict_turns: bool) -> str | None:
+    """Was Gemini an der Anfrage ablehnen würde, sonst ``None``."""
+    turns = [m for m in payload.get("messages", []) if m.get("role") != "system"]
+    if not turns:
+        return "contents is not specified"
+    if any(not str(m.get("content", "")).strip() for m in payload.get("messages", [])):
+        return "Unable to submit request because it has an empty text parameter"
+    if strict_turns and any(a["role"] == b["role"] for a, b in zip(turns, turns[1:])):
+        return "Please ensure that multiturn requests alternate between user and model"
+    return None
 
 
 Reply = Callable[[httpx2.Request], httpx2.Response]
 
 
 class Upstream:
-    """Der Anbieter als Attrappe. Merkt sich jede Anfrage."""
+    """Der Anbieter als Attrappe. Merkt sich jede Anfrage.
 
-    def __init__(self, reply: Reply | None = None, delay: float = 0.0) -> None:
+    ``validate``: Anfragen, die Gemini ablehnt, bekommen 400 statt ``reply``.
+    """
+
+    def __init__(
+        self,
+        reply: Reply | None = None,
+        delay: float = 0.0,
+        *,
+        validate: bool = True,
+        strict_turns: bool = False,
+    ) -> None:
         self.reply: Reply = reply or (lambda request: httpx2.Response(200, json=completion()))
         self.delay = delay
+        self.validate = validate
+        self.strict_turns = strict_turns
         self.requests: list[httpx2.Request] = []
         self.in_flight = 0
         self.peak = 0
@@ -152,6 +196,10 @@ class Upstream:
         try:
             if self.delay:
                 await asyncio.sleep(self.delay)
+            if self.validate:
+                problem = gemini_problem(json.loads(request.content), self.strict_turns)
+                if problem:
+                    return httpx2.Response(400, json=gemini_error(400, problem))
             return self.reply(request)
         finally:
             self.in_flight -= 1

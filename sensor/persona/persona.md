@@ -191,6 +191,10 @@ Persona.
   wird bewusst nicht an den LLM-Anbieter gegeben.
 - **Automatische Ergänzungen:** Cowrie hängt selbst einen Schutz gegen
   Prompt-Injection sowie Hostname, User und Arbeitsverzeichnis an.
+- **Was beim Modell ankommt (E-045):** Bei Exec trennt das Gateway den Befehl
+  vom System-Prompt und schickt ihn als user-Nachricht, wie in einer
+  interaktiven Sitzung. Der System-Prompt ist dadurch in jeder Anfrage
+  gleich. Anbieter ist Google (Gemini-API, bezahlte Stufe).
 - **Größe:** Der Prompt hat rund 29.600 Zeichen (ca. 7.400 Tokens) und geht bei
   jedem Befehl mit (Entscheidung siehe „Prompt-Größe“).
 
@@ -241,7 +245,7 @@ gehören in die Methodik.
 | Exec mit EOF gleich nach dem Befehl | Ausgabe                          | gleich, seit dem Patch; ohne Patch keine Ausgabe (E-044) |
 | stdin einer Exec-Shell (`ssh host sh < skript`) | jede Zeile ein eigener Befehl, im Log | nur `sh` geht ans Modell, stdin bleibt ungelesen (E-044) |
 | Eingabe an Programme, die stdin lesen (`cat` ohne Datei) | Eingabe des Programms, kein Befehl | jede Zeile ein eigener Befehl (E-044) |
-| Leere Zeile (interaktiv) | neuer Prompt                                | geht ans Modell, das meist leer antwortet              |
+| Leere Zeile (interaktiv) | neuer Prompt                                | das Gateway antwortet leer, ohne Modell (E-045); vorher meist leer vom Modell |
 | Unbekannte Befehle im Log | `cowrie.command.failed`                    | kein Ereignis, das Modell antwortet auf alles          |
 | Befehle je Adresse       | unbegrenzt                                  | höchstens 20 je Minute (Cowrie-Standard), darüber leere Ausgabe und `cowrie.llm.response` mit `local_rate_limit` (E-044) |
 | Länge der Ausgabe        | vollständig                                 | höchstens `LLM_MAX_TOKENS` des Gateways und 16.384 Zeichen (E-043, E-044) |
