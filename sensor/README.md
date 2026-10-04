@@ -16,7 +16,8 @@ keinen Verkehr. Die Zuteilung per Hash folgt in Schritt 7.4.
 | `scripts/build-fs-pickle.sh`  | `fs.pickle` der Persona auf dem Sensor bauen                     |
 | `scripts/cleanup.sh`          | Rohlogs, Mitschnitte und Downloads nach 14 Tagen löschen         |
 | `nftables/honeypot.nft`       | Umleitung von Port 22 auf `cowrie-a` (2.3), Sperre für 2322 (7.3) |
-| `scripts/check-cowrie-b.py`   | Prüfskript für cowrie-b (Schritt 7.3)                             |
+| `scripts/check-cowrie-b.py`   | Prüfskript für cowrie-b (Schritt 7.3), `--filtertest` (E-045)     |
+| `scripts/sshdrive_text.py`    | Wrapper um `sshdrive.py` aus dem Image, nur für `--filtertest`    |
 | `scripts/test-nft-guard.sh`   | Funktionstest der nftables-Regeln in Netz-Namespaces (CI)        |
 | `systemd/`                    | Aufräumen (Service und Timer) und Laden der nftables-Regel       |
 | `tests/`                      | Prüfungen für Persona und Konfiguration                          |
@@ -571,6 +572,42 @@ Prüfskript mit `--erwarte` starten und danach zurückstellen:
 
 Danach Schritt 6 einmal ohne `--erwarte`.
 
+### 8a. Filtertest: sperrt oder weigert sich Gemini? (E-045)
+
+Schickt neun eigene, harmlose Befehle, wie Angreifer sie schicken
+(`uname`, `whoami`, Dummy-Key an `authorized_keys`, `wget`/`curl` auf
+Dokumentationsadressen und example.com, `chmod +x` und Start, Crontab,
+Miner-Aufruf), je auf einer eigenen Verbindung von `127.0.0.1`. Ausgegeben
+werden je Befehl Kurzname, `outcome`, HTTP-Status, Antwortzeit, Länge und die
+ersten 200 Zeichen der Antwort, gesäubert und entschärft, dazu Zähler. Die
+Befehle selbst erscheinen nicht. Es sind Antworten auf unsere eigenen
+Befehle, kein Angreifertext; trotzdem nicht ins Lab-Log oder an einen
+Coding-Agenten geben. Eine Minute nach dem letzten Lauf von Schritt 6
+starten (Cowries Begrenzung je Adresse):
+
+```bash
+ssh -t hp-sensor 'sudo python3 /opt/honeypot-lab/sensor/scripts/check-cowrie-b.py --filtertest'
+```
+
+Erwartet: `Ergebnis: OK` (je Befehl genau ein Aufruf). Die Verteilung ist
+eine Information, keine Prüfung:
+
+- `upstream_error` mit 502 kann eine Sperre bei Gemini sein. Auf dem Sensor
+  sieht sie aus wie ein Fehler beim Anbieter; getrennt zählt sie auf dem
+  Hauptserver (Schritt 9) unter `gateway.status.upstream_blocked`.
+- Eine Weigerung kommt als `ok` mit Text wie „I'm sorry …“. Sie steht in der
+  Vorschau und auf dem Hauptserver unter `gateway.weigerungen`.
+- Sperrt oder weigert sich Gemini bei typischen Befehlen, entscheidet Tom vor
+  dem Start (Modell wechseln oder hinnehmen und im Start-Eintrag festhalten,
+  `method.md` 4.5).
+
+Die Antworten holt `scripts/sshdrive_text.py`: ein Wrapper um `sshdrive.py`
+aus dem Image, den das Prüfskript nur hier read-only in den Container hängt.
+`sshdrive.py` selbst gibt nur Länge und Hash aus (E-042); cowrie-b muss dafür
+nicht neu gebaut werden. Die Sitzungen fallen wie alle von `127.0.0.1` aus der
+Auswertung (`method.md` 8); ihre Befehle stehen, entschärft, in der
+öffentlichen Befehlsliste wie die Testsitzungen aus Schritt 6.
+
 ### 9. Abgleich in der Datenbank
 
 Auf dem Hauptserver, nur Zähler, siehe `server/README.md` „Abgleich“:
@@ -580,7 +617,10 @@ ssh globe 'cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.
 ```
 
 Erwartet: `passt` gleich `aufrufe`, `passt_nicht`, `ohne_befehl` und
-`befehle_ohne_aufruf` 0, unter `outcomes` die Ausgänge der Läufe.
+`befehle_ohne_aufruf` 0, unter `outcomes` die Ausgänge der Läufe. Unter
+`gateway` die Sicht des Gateways (E-045): Zahl je Status, darunter
+`upstream_blocked` und `local_empty`, `weigerungen`, `cache_quote` und die
+Kosten hochgerechnet auf einen Monat (`server/README.md`).
 
 ### Was der Patch ändert
 

