@@ -23,6 +23,8 @@ die API über Caddy erreichbar (E-021).
 | `rules/campaigns.yml`       | Labels der Kampagnen: Fingerprint-Präfix → Label und Beschreibung |
 | `app/ratelimit.py`          | Rate-Limit pro Client, Schlüssel ohne Adresse               |
 | `app/llm_gateway.py`        | `POST /v1/chat/completions`: LLM-Gateway für cowrie-b (Schritt 7.2) |
+| `app/llm_provider.py`       | Anbieter Gemini: feste URL, Modelle und Preise, Form der Nachrichten, Antworten lesen (E-045) |
+| `app/llm_refusal.py`        | Merker für Weigerungen des Modells, nur ein Wahrheitswert (E-045) |
 | `app/llm_request.py`        | Anfragen ans Gateway prüfen: Schema, Grenzen, Herkunft      |
 | `app/llm_limits.py`         | Kosten, Budget, Minutengrenze des Gateways                  |
 | `app/llm_probe.py`          | Rümpfe für Probeaufrufe des Gateways                        |
@@ -32,7 +34,7 @@ die API über Caddy erreichbar (E-021).
 | `app/models.py`             | die sieben Tabellen aus Schritt 3.3, dazu `llm_responses` (7.3) |
 | `app/hashing.py`            | HMAC-SHA256 der Quell-IPs (E-009, E-022)                   |
 | `app/logging.py`            | JSON-Logs                                                  |
-| `app/migrations/`           | Alembic, `0001_grundschema.py` legt alles an, `0002` ergänzt Kennzahlen der Kampagnen, `0003` zwischengespeicherte Tokens in `llm_usage`, `0004` Tabelle `llm_responses` und `commands.input_ref` |
+| `app/migrations/`           | Alembic, `0001_grundschema.py` legt alles an, `0002` ergänzt Kennzahlen der Kampagnen, `0003` zwischengespeicherte Tokens in `llm_usage`, `0004` Tabelle `llm_responses` und `commands.input_ref`, `0005` `reasoning_tokens` und `refusal` in `llm_usage` (E-045) |
 | `worker/main.py`            | Zeitplan und Einzelläufe der Jobs                          |
 | `worker/jobs.py`            | `ipinfo`, `statistik`, `aufraeumen` (Schritt 4.3), `attack` (6.1), `campaigns` (6.2) |
 | `tests/`                    | Tests ohne Datenbank und, mit Marker `db`, mit Datenbank   |
@@ -432,22 +434,30 @@ Wie beim ATT&CK-Report: nur Terminal, nicht Log; Angreifertext, entschärft,
 auf 200 Zeichen gekürzt, Steuerzeichen sichtbar. Nicht ungeprüft an einen
 Coding-Agenten geben.
 
-## LLM-Gateway (Schritt 7.2)
+## LLM-Gateway (Schritt 7.2, Gemini seit E-045)
 
 `POST /v1/chat/completions` nimmt ab Schritt 7.3 die Anfragen von cowrie-b
 an, im OpenAI-Format. Das Gateway prüft Token und Anfrage, setzt Modell und
-Grenzen aus der `.env` durch, leitet an OpenAI weiter und schreibt jede
-Anfrage mit gültigem Token in `llm_usage`, ohne Inhalt. Der echte API-Key
-steht nur in der `.env` des Hauptservers (E-008). Herleitung der Grenzen und
-der Prüfung: E-043.
+Grenzen aus der `.env` durch, leitet an die Gemini-API weiter (deren
+OpenAI-kompatiblen Endpunkt) und schreibt jede Anfrage mit gültigem Token in
+`llm_usage`, ohne Inhalt. Der echte API-Key steht nur in der `.env` des
+Hauptservers (E-008). Herleitung der Grenzen und der Prüfung: E-043; Anbieter,
+Modell, Denkmodus, Sperren und Kosten: E-045.
+
+Adresse und Preise stehen fest in `app/llm_provider.py`, nicht in der `.env`:
+`https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`,
+der Key nur im Header `Authorization`, nie als `?key=` in der URL. Erlaubt
+sind nur feste Modellversionen aus der Liste dort, kein `-latest`.
 
 | Antwort | Bedeutung | `llm_usage.status` |
 |---------|-----------|--------------------|
-| 200 | Antwort des Modells | `ok` |
+| 200 | Antwort des Modells, auch leer | `ok` |
+| 200 | leere Zeile oder Exec ohne Befehl, ohne Anbieter beantwortet | `local_empty` |
 | 400, 413 | Anfrage ungültig oder zu groß, auch: nicht in Cowries Form, falscher Prompt-Hash | `rejected` |
 | 401 | Token fehlt oder falsch | keine Zeile |
 | 429 `rate_limited` | `LLM_CALLS_PER_MINUTE` erreicht, Anbieter nicht gerufen | `rate_limited` |
-| 502 | 429 des Anbieters, etwa sein hartes Monatslimit | `upstream_limited` |
+| 502 | 429 oder 402 des Anbieters: Rate-Limit, Ausgabenlimit, Prepay-Guthaben leer | `upstream_limited` |
+| 502 | Antwort von Gemini gesperrt (`finish_reason` `content_filter…`, kein Kandidat) | `upstream_blocked` |
 | 502 | jeder andere Fehler beim Anbieter | `upstream_error` |
 | 503 `budget_exceeded` | Monats- oder Tagesbudget erreicht, Anbieter nicht gerufen | `budget_exceeded` |
 | 503 `unavailable` | abgeschaltet oder unvollständig konfiguriert | `disabled`; ohne brauchbares `LLM_GATEWAY_TOKEN` keine Zeile |
@@ -456,18 +466,36 @@ der Prüfung: E-043.
 429 kommt nur von der Minutengrenze des Gateways, nie vom Budget und nie vom
 Anbieter. Die Minutengrenze gehört zur Behandlung, ein Budgetstopp ist ein
 Ausfall (`method.md` 8, V3); auf dem Sensor trennt beides nur `http_status`.
-Für den Sensor sehen `upstream_limited` und `upstream_error` gleich aus.
+Für den Sensor sehen `upstream_limited`, `upstream_blocked` und
+`upstream_error` gleich aus (502, gleicher Rumpf); getrennt zählt sie
+`python -m app.llm_check` (siehe „Abgleich“ unten).
 
-`cost_micros` ist eine obere Schätzung ohne `usage` und bei jedem Abbruch,
-nachdem die Verbindung stand (Zeitüberschreitung, Lese- oder Schreibfehler,
-abgebrochene Verbindung, zu große Antwort): Der Anbieter kann trotzdem
-abrechnen. 0 steht dort, wenn keine Verbindung zustande kam, und bei einer
-Fehlerantwort des Anbieters. So leert ein Ausfall des Anbieters nicht das
-Budget.
+**Was an Gemini geht (E-045).** Gemini lehnt Anfragen ohne user-Nachricht
+und Nachrichten mit leerem Text ab. Cowrie schickt bei Exec nur die
+System-Nachricht mit dem Befehl am Ende. Das Gateway trennt den Befehl dort
+ab und schickt ihn als user-Nachricht; der System-Prompt ist dann bei Exec
+und interaktiv derselbe (Cache). Leere Nachrichten im Verlauf fallen weg, eine
+leere letzte Zeile beantwortet das Gateway selbst leer. Geprüft wird vorher
+Cowries Form; der Prompt-Hash ändert sich dadurch nicht.
 
-Jede Anfrage schreibt eine Logzeile `llm` mit Status, Tokens, Kosten, Latenz
-und `prompt_sha256`, dem Hash des Persona-Teils im System-Prompt. Prompt und
-Antwort stehen nirgends, auch nicht bei Fehlern.
+**Kosten** in Millionstel US-Dollar (`cost_micros`), mit den Preisen aus
+`app/llm_provider.py`. Denk-Tokens zählen als Ausgabe und stehen zusätzlich
+in `reasoning_tokens`. `cost_micros` ist eine obere Schätzung ohne `usage`
+und bei jedem Abbruch, nachdem die Verbindung stand (Zeitüberschreitung,
+Lese- oder Schreibfehler, abgebrochene Verbindung, zu große Antwort): Der
+Anbieter kann trotzdem abrechnen. 0 steht dort, wenn keine Verbindung
+zustande kam, und bei einer Fehlerantwort des Anbieters (Google berechnet
+400 und 500 nicht). So leert ein Ausfall des Anbieters nicht das Budget.
+
+**Weigerungen.** Passt eine Antwort zu einer Wendung aus `app/llm_refusal.py`
+(„I'm sorry“, „As an AI“ …), steht in `llm_usage.refusal` `true`. Kein Text,
+nur der Merker; die Antwort geht trotzdem an Cowrie.
+
+Jede Anfrage schreibt eine Logzeile `llm` mit Status, Tokens (auch
+`reasoning_tokens`), Kosten, Latenz, `prompt_sha256`, `finish_reason` (nur
+`stop`, `length`, `content_filter`, `sonst`), `block` (Grund einer Sperre aus
+einer festen Liste), `leer` und `weigerung`. Prompt und Antwort stehen
+nirgends, auch nicht bei Fehlern.
 
 ### Variablen
 
@@ -479,20 +507,20 @@ oder ist er ungültig, startet die API trotzdem; nur das Gateway antwortet mit
 |----------|---------|-----------|
 | `LLM_GATEWAY_ENABLED` | `false` | Schalter, aus heißt 503 |
 | `LLM_GATEWAY_TOKEN` | – | Token von cowrie-b, auch in der `.env` des Sensors; mindestens 32 Zeichen |
-| `LLM_API_KEY` | – | Key des Lab-Projekts bei OpenAI, nur hier |
-| `LLM_BASE_URL` | – | `https://api.openai.com/v1`, nur https |
-| `LLM_MODEL` | – | Modell-ID, eines ohne Reasoning, das `temperature` annimmt |
-| `LLM_MAX_TOKENS` | 2048 | Ausgabegrenze je Antwort |
-| `LLM_MAX_TOKENS_PARAM` | `max_completion_tokens` | `max_tokens` für andere Anbieter |
-| `LLM_TEMPERATURE` | 0 | niedrig, `method.md` 4.5 |
+| `LLM_API_KEY` | – | Gemini-API-Key des Lab-Projekts, nur hier |
+| `LLM_MODEL` | – | `gemini-3.1-flash-lite` (E-045), nur Werte aus `app/llm_provider.py` |
+| `LLM_MAX_TOKENS` | 2048 | Ausgabegrenze je Antwort, Denk-Tokens eingeschlossen |
+| `LLM_TEMPERATURE` | 1 | Googles Vorgabe für Gemini 3, `method.md` 4.5 |
+| `LLM_REASONING_EFFORT` | `minimal` | Denkmodus; `low` nur für `gemini-3.8-flash` |
+| `LLM_MERGE_TURNS` | `false` | aufeinanderfolgende Nachrichten derselben Rolle zusammenfassen (Probe „verlauf“) |
 | `LLM_TIMEOUT_SECONDS` | 30 | Zeitlimit beim Anbieter, höchstens 55 |
-| `LLM_PRICE_INPUT_EUR`, `LLM_PRICE_CACHED_INPUT_EUR`, `LLM_PRICE_OUTPUT_EUR` | – | Euro je eine Million Tokens, Punkt als Trenner |
-| `LLM_BUDGET_MONTH_EUR`, `LLM_BUDGET_DAY_EUR` | – | Budgets, Kalendermonat und -tag in UTC |
+| `LLM_BUDGET_MONTH_USD`, `LLM_BUDGET_DAY_USD` | – | Budgets in US-Dollar, Kalendermonat und -tag in UTC |
 | `LLM_CALLS_PER_MINUTE` | 60 | Aufrufe beim Anbieter je 60 Sekunden, alle zusammen |
 | `LLM_PROMPT_SHA256` | leer | gepinnter Prompt-Hash, leer heißt nicht geprüft |
 
-OpenAI rechnet in US-Dollar ab. Die Preise mit einem Aufschlag für den Kurs in
-Euro umrechnen. Ohne Preise und Budgets gibt es kein Gateway.
+Seit E-045 entfallen `LLM_BASE_URL`, `LLM_MAX_TOKENS_PARAM`,
+`LLM_PRICE_*_EUR` und `LLM_BUDGET_*_EUR`. Stehen sie noch in der `.env`,
+werden sie ignoriert; besser löschen. Ohne Budgets gibt es kein Gateway.
 
 Budget und Minutengrenze leben im Speicher des API-Prozesses. Nach einem
 Neustart lädt das Gateway den Stand aus `llm_usage`. Die API läuft mit einem
@@ -519,67 +547,75 @@ Höchste Zahl an Befehlen in einer Minute in den letzten 14 Tagen:
 cd <PFAD> && sudo docker compose -f docker-compose.server.yml exec db psql -U honeypot -d honeypot -c "SELECT max(n) AS hoechstens_je_minute FROM (SELECT count(*) AS n FROM commands WHERE occurred_at >= now() - interval '14 days' GROUP BY date_trunc('minute', occurred_at)) AS je_minute;"
 ```
 
-- **Kosten je Aufruf:** rund 8.000 Eingabe-Tokens, davon nach dem ersten
-  Aufruf meist rund 7.400 aus dem Cache, dazu meist unter 300 Ausgabe-Tokens.
-  Also etwa `(600 × Eingabepreis + 7.400 × Cache-Preis + 300 × Ausgabepreis) /
-  1.000.000` Euro.
+- **Kosten je Aufruf** mit `gemini-3.1-flash-lite` (Eingabe 0,25 $, Cache
+  0,025 $, Ausgabe inkl. Denken 1,50 $ je Mio. Tokens): rund 8.000
+  Eingabe-Tokens, davon ein unbekannter Teil aus dem Cache, dazu meist unter
+  300 Ausgabe- und Denk-Tokens. Also `(Eingabe ohne Cache × 0,25 + Cache ×
+  0,025 + Ausgabe × 1,50) / 1.000.000` Dollar: ohne Cache und mit 800
+  Ausgabe-Tokens 3,2 m$, mit 70 % Cache und 250 Ausgabe-Tokens 1,1 m$.
 - **Erwartete Tageskosten:** B bekommt etwa die Hälfte der Befehle, also
-  `Mittel / 2 × Kosten je Aufruf`.
-- **Tagesbudget:** großzügig, etwa das Dreifache der erwarteten Tageskosten,
-  und über dem Tag mit dem Höchstwert. Ein greifendes Tageslimit macht B für
-  den Rest des Tages stumm; das sind Ausfallzeiten im Experiment
-  (`method.md` 8).
-- **Monatsbudget:** muss die ganze Laufzeit samt Verlängerung tragen
-  (`method.md` 10). Ein greifendes Monatslimit legt B bis zum Monatsende still.
+  `Mittel / 2 × Kosten je Aufruf`. Mit der Annahme aus E-045, rund 950
+  Aufrufen je Tag in B: 3,04 $ an einem schlechten Tag ohne Cache, 92,40 $ im
+  Monat.
+- **Tagesbudget:** großzügig, etwa das Doppelte eines schlechten Tages, also
+  6,10 $. Ein greifendes Tageslimit macht B für den Rest des Tages stumm; das
+  sind Ausfallzeiten im Experiment (`method.md` 8).
+- **Monatsbudget:** der schlechte Fall ohne Cache, aufgerundet: 100 $. Es
+  muss die ganze Laufzeit samt Verlängerung tragen (`method.md` 10). Meldet
+  Gemini `cached_tokens` nicht, bucht das Gateway alles zum vollen
+  Eingabepreis; das Budget ist deshalb auf „ohne Cache“ gerechnet.
 - **`LLM_CALLS_PER_MINUTE`:** über dem Höchstwert je Minute, mit Reserve. B
   bekommt im Mittel die Hälfte, aber die Zuteilung geht nach Adresse: Ein
   Schwall einer einzelnen Quelle landet ganz in einer Variante. Den Höchstwert
-  deshalb nicht halbieren.
+  deshalb nicht halbieren. Das Rate-Limit des Modells in AI Studio muss
+  darüber liegen.
 
-### Hartes Limit bei OpenAI
+Nach dem Start zeigt `python -m app.llm_check --tage 7` die beobachtete
+Cache-Quote und die hochgerechneten Kosten je Monat.
 
-Das Gateway ist die erste Grenze, OpenAI die zweite. Beide zusammen fangen
-auch einen Fehler im Gateway ab.
+### Grenzen bei Google
 
-1. **Eigenes Projekt** nur fürs Lab anlegen. Key, Limits und Abrechnung hängen
-   dann nur an diesem Projekt.
-2. **Key mit wenig Rechten:** im Projekt einen Key anlegen, Permissions
-   „Restricted“, nur Chat Completions auf „Write“, alles andere „None“.
-3. **Nur das gewählte Modell:** unter Project settings → Limits die Modelle
-   auf das eine aus `LLM_MODEL` beschränken.
-4. **Monatslimit erzwingen:** Project settings → Limits → Spend → „Edit spend
-   limit“, „Monthly spend limit“ in US-Dollar eintragen, „Enforce a hard
-   limit“ einschalten, Save. Den Wert etwas über das Monatsbudget des Gateways
-   setzen, umgerechnet in Dollar, damit das Gateway zuerst greift. Laut OpenAI
-   wirkt die Sperre nicht sofort und kann leicht überschritten werden; danach
-   antwortet OpenAI mit 429 `project_spend_limit_exceeded`, das Gateway gibt
-   das als 502 weiter und schreibt `upstream_limited` in `llm_usage`.
-5. **Prepaid ohne automatisches Aufladen:** Guthaben im Voraus kaufen und
-   „Auto recharge“ aus lassen. Ein leeres Guthaben ist die letzte Grenze
-   (`credit_balance_exhausted`).
+Das Gateway ist die erste Grenze, Google die zweite. Beide zusammen fangen
+auch einen Fehler im Gateway ab. Das Guthaben aus Google AI Pro (10 $ im
+Monat) reicht allein nicht (E-045); darüber zahlt das Prepay-Guthaben.
+
+1. **Guthaben aus AI Pro:** unter developers.google.com/profile den Vorteil
+   des Google Developer Program aktivieren und das monatliche
+   Cloud-Guthaben einem Cloud-Billing-Konto zuordnen.
+2. **Eigenes Projekt** nur fürs Lab in AI Studio anlegen (oder ein
+   Cloud-Projekt importieren). Key, Limits und Abrechnung hängen dann nur an
+   diesem Projekt.
+3. **Billing und Prepay:** im Projekt „Set up billing“ mit diesem Konto,
+   Prepay mit mindestens 5 $. Ohne Prepay-Guthaben über 0 nutzt Google das
+   Cloud-Guthaben nicht, und bei 0 $ antworten alle Keys mit 402
+   (`upstream_limited`). Auto-Reload nur mit „Monthly auto-charge limit“ knapp
+   über dem Monatsbudget des Gateways; ohne Auto-Reload rechtzeitig nachkaufen.
+4. **Projekt-Ausgabenlimit:** Spend → „Monthly spend cap“ → „Edit spend cap“,
+   etwas über dem Monatsbudget des Gateways (110 $), damit das Gateway zuerst
+   greift. Laut Google experimentell und mit rund 10 Minuten Verzug.
+5. **Key mit wenig Rechten:** in der Cloud Console unter APIs & Services →
+   Credentials den Key auf „Generative Language API“ beschränken, optional
+   auf die Adresse des Hauptservers.
+6. **Bezahlte Stufe prüfen:** In AI Studio steht das Projekt auf „Paid“. Nur
+   dann gilt: keine Nutzung von Prompts und Antworten zum Training
+   (ai.google.dev/gemini-api/terms, „Paid Services“).
 
 Prüfen:
 
-- Unter Project settings → Limits steht das Monatslimit mit „Enforce a hard
-  limit“, und nur das eine Modell ist zugelassen.
-- Unter Billing ist „Auto recharge“ aus.
-- Der Key steht auf „Restricted“.
-- Optionale Gegenprobe nach dem ersten Probeaufruf (unten): das Projektlimit
-  kurz auf 0,01 $ setzen, einige Minuten warten, Probeaufruf wiederholen.
-  Erwartet: HTTP 502, im Log `upstream_status: 429` und in `llm_usage` der
-  Status `upstream_limited`. Danach das Limit zurücksetzen.
-- Monatlich die Ausgaben bei OpenAI mit `llm_usage` vergleichen:
+- Projekt „Paid“, Prepay-Guthaben über 0, Ausgabenlimit gesetzt.
+- Unter Rate limits: RPM des Modells über `LLM_CALLS_PER_MINUTE`.
+- Monatlich die Ausgaben in AI Studio mit `llm_usage` vergleichen (Dollar):
 
 ```bash
-cd <PFAD> && sudo docker compose -f docker-compose.server.yml exec db psql -U honeypot -d honeypot -c "SELECT date_trunc('month', occurred_at) AS monat, round(sum(cost_micros) / 1e6, 2) AS euro, count(*) AS aufrufe FROM llm_usage GROUP BY 1 ORDER BY 1;"
+cd <PFAD> && sudo docker compose -f docker-compose.server.yml exec db psql -U honeypot -d honeypot -c "SELECT date_trunc('month', occurred_at) AS monat, round(sum(cost_micros) / 1e6, 2) AS dollar, count(*) AS aufrufe FROM llm_usage GROUP BY 1 ORDER BY 1;"
 ```
 
 ### Ausrollen
 
 1. Code übertragen wie oben unter „Auf den Hauptserver bringen“ (`server/`
    und `docker-compose.server.yml`).
-2. Die neuen Variablen aus `.env.example` in die `.env` übernehmen, zuerst mit
-   `LLM_GATEWAY_ENABLED=false`.
+2. Die Variablen aus `.env.example` in die `.env` übernehmen, zuerst mit
+   `LLM_GATEWAY_ENABLED=false`; die entfallenen löschen (siehe „Variablen“).
 3. Netz prüfen. `lab_edge` wurde ohne `--internal` angelegt; der Weg zum
    Anbieter läuft trotzdem ausdrücklich über `lab_egress` (E-043):
 
@@ -588,7 +624,11 @@ sudo docker network inspect lab_edge -f '{{.Internal}}'
 ```
 
    Erwartet: `false`.
-4. Bauen, Migration 0003, Starten:
+4. Bauen, Migration 0005, Starten. Die Migration bricht ab, wenn in
+   `llm_usage` schon Zeilen mit Kosten stehen: Das wären Euro aus der Zeit vor
+   E-045. Bis dahin war kein Key eingetragen, also sollte es keine geben.
+   Bricht sie doch ab, nicht weitermachen, sondern klären (Zeilen ansehen,
+   Entscheidung in `docs/decisions.md`).
 
 ```bash
 cd <PFAD> && sudo docker compose -f docker-compose.server.yml build
@@ -609,11 +649,11 @@ cd <PFAD> && sudo docker compose -f docker-compose.server.yml up -d
 cd <PFAD> && sudo docker compose -f docker-compose.server.yml logs api 2>&1 | grep llm-gateway
 ```
 
-6. Weg nach außen, ohne Key. Erwartet: `erreichbar, HTTP 401`:
+6. Weg nach außen, ohne Key. Erwartet: `erreichbar, HTTP` mit einem 4xx-Code:
 
 ```bash
 cd <PFAD> && sudo docker compose -f docker-compose.server.yml exec api python -c "import urllib.request, urllib.error
-try: urllib.request.urlopen('https://api.openai.com/v1/models', timeout=10)
+try: urllib.request.urlopen('https://generativelanguage.googleapis.com/v1beta/openai/models', timeout=10)
 except urllib.error.HTTPError as e: print('erreichbar, HTTP', e.code)"
 ```
 
@@ -629,15 +669,12 @@ TOKEN="$(sudo sed -n 's/^LLM_GATEWAY_TOKEN=//p' <PFAD>/.env)"
 ```
 
 Die Rümpfe erzeugt `app/llm_probe.py` in der Form, die Cowrie schickt: Exec
-nur mit der System-Nachricht, interaktiv mit einem Befehl. Beide haben
-dieselbe Probe-Persona, lang genug für den Cache des Anbieters:
+nur mit der System-Nachricht, interaktiv mit einem Befehl, `verlauf` mit
+einer früheren Antwort und einer leeren Antwort, `leer` mit einer leeren
+Zeile. Alle haben dieselbe Probe-Persona, lang genug für Geminis Cache:
 
 ```bash
-cd <PFAD> && sudo docker compose -f docker-compose.server.yml exec -T api python -m app.llm_probe exec > /tmp/llm-exec.json
-```
-
-```bash
-cd <PFAD> && sudo docker compose -f docker-compose.server.yml exec -T api python -m app.llm_probe interactive > /tmp/llm-interactive.json
+cd <PFAD> && for f in exec interactive verlauf leer; do sudo docker compose -f docker-compose.server.yml exec -T api python -m app.llm_probe $f > /tmp/llm-$f.json; done
 ```
 
 1. Ohne Token. Erwartet: `HTTP 401`.
@@ -653,7 +690,7 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: 
 ```
 
 3. `LLM_GATEWAY_ENABLED=true` in die `.env`, dann `up -d` wie oben. Im Log
-   steht jetzt `llm-gateway bereit` mit Modell und Grenzen.
+   steht jetzt `llm-gateway bereit` mit Modell, `reasoning_effort` und Grenzen.
 4. Ungültiger Rumpf. Erwartet: `HTTP 400`, Code `invalid_request`, kein
    Aufruf beim Anbieter:
 
@@ -661,8 +698,9 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: 
 printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: application/json' -d '{}' -w '\nHTTP %{http_code}\n' https://api.tomkaufmann.dev/v1/chat/completions
 ```
 
-5. Echter Aufruf in Exec-Form, nur mit der System-Nachricht. Erwartet:
-   `HTTP 200` und `gateway-probe-ok` in `choices[0].message.content`:
+5. Echter Aufruf in Exec-Form. Erwartet: `HTTP 200` und `gateway-probe-ok` in
+   `choices[0].message.content`. Scheitert er mit 502, prüfen, ob das
+   Gateway den Befehl abtrennt (Log: `upstream_status` 400):
 
 ```bash
 printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: application/json' --data-binary @/tmp/llm-exec.json -w '\nHTTP %{http_code}\n' https://api.tomkaufmann.dev/v1/chat/completions
@@ -675,26 +713,46 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: 
 printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: application/json' --data-binary @/tmp/llm-interactive.json -w '\nHTTP %{http_code}\n' https://api.tomkaufmann.dev/v1/chat/completions
 ```
 
-   Fast der ganze Verkehr ist Exec. Ein Anbieter oder Modell, das Anfragen
-   ohne user-Nachricht ablehnt (5 scheitert mit 502, 6 klappt), scheidet aus.
-7. Log. Erwartet: zwei Zeilen mit `"status": "ok"` und **demselben**
-   `prompt_sha256`; die zweite meist mit `cached_tokens` über 0:
+7. **Verlauf.** Nach dem Weglassen der leeren Antwort kommen zwei
+   user-Nachrichten in Folge bei Gemini an, und die frühere Antwort hat keine
+   Gemini-Signatur. Nur der echte Anbieter zeigt, ob er das annimmt. Erwartet:
+   `HTTP 200` mit `gateway-probe-ok`. Bei `HTTP 502` und im Log
+   `upstream_status` 400: `LLM_MERGE_TURNS=true` in die `.env`, `up -d`,
+   wiederholen. Der Wert kommt in den Start-Eintrag (`method.md` 4.5).
+
+```bash
+printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: application/json' --data-binary @/tmp/llm-verlauf.json -w '\nHTTP %{http_code}\n' https://api.tomkaufmann.dev/v1/chat/completions
+```
+
+8. **Leere Zeile.** Erwartet: `HTTP 200` mit leerem `content`, ohne Aufruf
+   beim Anbieter (Status `local_empty`):
+
+```bash
+printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: application/json' --data-binary @/tmp/llm-leer.json -w '\nHTTP %{http_code}\n' https://api.tomkaufmann.dev/v1/chat/completions
+```
+
+9. Log. Erwartet: Zeilen mit `"status": "ok"` und **demselben**
+   `prompt_sha256`, `reasoning_tokens` klein (Denkmodus `minimal`), ab dem
+   zweiten Aufruf meist `cached_tokens` über 0. Bleibt `cached_tokens` immer
+   0, meldet Gemini den Cache nicht oder er greift nicht; dann bucht das
+   Gateway alles zum vollen Preis (Budget ist darauf gerechnet):
 
 ```bash
 cd <PFAD> && sudo docker compose -f docker-compose.server.yml logs --since 10m api 2>&1 | grep '"msg": "llm"'
 ```
 
-8. `llm_usage`. Erwartet: die Zeilen aus 2, 4, 5 und 6 (`disabled`,
-   `rejected`, `ok`, `ok`) mit Tokens, Kosten und Latenz:
+10. `llm_usage`. Erwartet: die Zeilen aus 2, 4 bis 8 (`disabled`,
+    `rejected`, `ok`, `ok`, `ok`, `local_empty`) mit Tokens, Kosten und
+    Latenz:
 
 ```bash
-cd <PFAD> && sudo docker compose -f docker-compose.server.yml exec db psql -U honeypot -d honeypot -c "SELECT id, occurred_at, model, status, prompt_tokens, cached_tokens, completion_tokens, cost_micros, latency_ms FROM llm_usage ORDER BY id DESC LIMIT 5;"
+cd <PFAD> && sudo docker compose -f docker-compose.server.yml exec db psql -U honeypot -d honeypot -c "SELECT id, occurred_at, model, status, prompt_tokens, cached_tokens, completion_tokens, reasoning_tokens, cost_micros, latency_ms, refusal FROM llm_usage ORDER BY id DESC LIMIT 7;"
 ```
 
-9. Aufräumen:
+11. Aufräumen:
 
 ```bash
-rm -f /tmp/llm-exec.json /tmp/llm-interactive.json && unset TOKEN
+rm -f /tmp/llm-exec.json /tmp/llm-interactive.json /tmp/llm-verlauf.json /tmp/llm-leer.json && unset TOKEN
 ```
 
 Ist `LLM_PROMPT_SHA256` gepinnt, antworten die Probeaufrufe mit 400 und
@@ -728,8 +786,9 @@ Umgesetzt in Schritt 7.3, Anleitung in `sensor/README.md`, Abschnitt
 - **`http_status` in `cowrie.llm.response`:** 429 heißt nur Minutengrenze
   des Gateways, sie gehört zur Behandlung. 503 heißt Gateway aus oder Budget
   erschöpft, beides ist ein Ausfall (`method.md` 8). 502 ist der Anbieter
-  (in `llm_usage` `upstream_error` oder `upstream_limited`), 504 das
-  Zeitlimit.
+  (in `llm_usage` `upstream_error`, `upstream_limited` oder
+  `upstream_blocked`), 504 das Zeitlimit. Gesperrte Antworten gehören zur
+  Behandlung; `method.md` 8 zieht sie bei der Ausfallzeit ab (E-045).
 
 ## cowrie-b am Ingest (Schritt 7.3)
 
@@ -788,6 +847,14 @@ Gibt nur Zähler aus. Erwartet: `passt` gleich `aufrufe`, `passt_nicht`,
 `ohne_befehl` und `befehle_ohne_aufruf` 0. Ein Wert über 0 bei
 `passt_nicht` oder `ohne_befehl` heißt: In einer Sitzung ist ein
 `command.input` verloren gegangen, die Nummern sind verrutscht.
+
+Unter `gateway` steht die Sicht des Gateways aus `llm_usage` (E-045): Zahl je
+`status` (darunter `upstream_blocked`, auf dem Sensor nur `upstream_error`),
+`weigerungen`, `cache_quote` (Summe `cached_tokens` / Summe `prompt_tokens`),
+`kosten_usd` im Zeitraum, `aufrufe_je_tag` und `kosten_je_monat_usd`, die
+Kosten des Zeitraums hochgerechnet auf 30,4 Tage. Die gebuchten Kosten
+enthalten die beobachtete Cache-Quote schon. Ohne `--tage` zählt der Zeitraum
+ab der ersten Zeile in `llm_usage`.
 
 ```bash
 cd /opt/honeypot-lab && sudo docker compose -f docker-compose.server.yml exec -T api python -m app.llm_check --tage 1

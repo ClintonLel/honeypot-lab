@@ -146,7 +146,13 @@ Diese Werte stehen vor dem Start im Start-Eintrag in `docs/decisions.md` und
 bleiben während der Laufzeit gleich:
 
 - Cowrie-Version und Image-Digest von A und B, Commit des Patches
-- Anbieter, Modell-ID, `temperature`, `max_tokens`
+- Anbieter (Google, Gemini-API über den OpenAI-kompatiblen Endpunkt,
+  bezahlte Stufe), Modell-ID (feste Version, gewählt `gemini-3.1-flash-lite`),
+  `temperature`, `max_tokens`, `reasoning_effort`, Stand der Preistabelle
+  (E-045)
+- Anpassung der Nachrichten an Gemini (E-045): Exec-Befehl als
+  user-Nachricht, leere Zeilen vom Gateway leer beantwortet, Wert von
+  `LLM_MERGE_TURNS` nach der Probe `verlauf`
 - Commit von `sensor/persona/prompt.md`
 - Cowries Begrenzung je Adresse (`rate_limit_requests`, `rate_limit_window`)
 - Grenzen des Gateways: Monats- und Tagesbudget, Aufrufe je Minute,
@@ -158,9 +164,15 @@ bleiben während der Laufzeit gleich:
 
 Vorgaben dazu:
 
-- **`temperature` niedrig.** Eine echte Shell antwortet auf denselben Befehl
-  gleich. Schwankende Antworten wären ein Merkmal von B, das sich mit einem
-  Parameter vermeiden lässt.
+- **`temperature` 1,0, die Vorgabe des Herstellers.** Eine echte Shell
+  antwortet auf denselben Befehl gleich, deshalb war hier zuerst eine
+  niedrige `temperature` vorgesehen. Für Gemini 3 rät Google davon ab:
+  Unter 1,0 drohen Schleifen (E-045). Eine Antwort, die sich bis zur
+  Ausgabegrenze wiederholt, verriete B deutlicher als Schwankungen, die
+  ohnehin zur Behandlung gehören (Abschnitt 11, Punkt 6).
+- **Denkmodus so gering wie möglich** (`reasoning_effort` `minimal`).
+  Abschalten lässt er sich bei Gemini 3 nicht. Denken verlängert die
+  Antwortzeit (H3), kostet wie Ausgabe und zählt gegen `max_tokens`.
 - **`max_tokens` groß genug** für die längste Datei, die wörtlich im Prompt
   steht. Cowries Standard von 500 Tokens reicht dafür nicht, die feste Ausgabe
   von `dmesg` hat rund 2.600 Zeichen.
@@ -356,6 +368,7 @@ sind keine Ergebnisse.
 | K1 | Anteil der Aufrufe in B mit `outcome = ok`, außerhalb von Ausfallzeiten | mindestens 95 % |
 | K2 | Antwortzeit in B: Median, 90. und 99. Perzentil | wird berichtet |
 | K3 | Anteil der Aufrufe mit `outcome` `local_rate_limit` (Cowries Begrenzung je Adresse) oder `rate_limited` (Minutengrenze des Gateways, 429) | unter 1 % |
+| K4 | Aufrufe beim Anbieter mit gesperrter Antwort (`llm_usage.status = upstream_blocked`) und mit Weigerungs-Merker (`llm_usage.refusal`), je als Anteil (E-045) | wird berichtet |
 
 Verfehlt eine Kontrolle ihre Erwartung, wird die Primärauswertung trotzdem
 berichtet, mit Warnhinweis und der gefundenen Ursache.
@@ -378,7 +391,11 @@ Ausgeschlossen wird nur, was hier steht.
    - B mindestens 5 Aufrufe hat und mindestens die Hälfte davon das
      `outcome` `unavailable`, `upstream_error`, `timeout` oder `error` hat
      (Gateway aus oder nicht erreichbar, Budget erschöpft, Fehler oder
-     Zeitüberschreitung beim Anbieter).
+     Zeitüberschreitung beim Anbieter). Gesperrte Antworten zählen dabei
+     nicht als Fehler: Von den Aufrufen mit `upstream_error` im Fenster wird
+     die Zahl der Zeilen mit `status = upstream_blocked` in `llm_usage` mit
+     `occurred_at` im selben Fenster abgezogen, höchstens bis 0. Auf dem
+     Sensor sind Sperren von Fehlern nicht zu unterscheiden (beide 502).
 
    Quellen, deren erster Befehl in einer Ausfallzeit liegt, fallen aus allen
    Größen je Quelle. Aufrufe in Ausfallzeiten fallen aus H3.
@@ -390,6 +407,16 @@ Adresse (`local_rate_limit`) oder der Minutengrenze des Gateways
 Behandlung, wie sie läuft. Wie stark das Ergebnis davon abhängt, zeigen R5
 und K3. Ein Budgetstopp (`unavailable`, 503) gehört nicht dazu, er zählt als
 Ausfall (Punkt 2).
+
+**Gesperrte Antworten und Weigerungen gehören zum Verhalten von B.** Sperrt
+Gemini eine Antwort, sieht der Client keine Ausgabe (502,
+`upstream_blocked`, E-045); weigert sich das Modell, sieht er die Weigerung.
+Beides ist die Behandlung, wie sie läuft, nicht ein Ausfall. Die Quellen
+bleiben in M1 und allen Größen zu H2, mit dem, was sie danach getan haben;
+auf Sperren reagierende Bots schicken dann womöglich seltener Folgebefehle,
+und das ist Teil des gemessenen Unterschieds. Wie stark das Ergebnis davon
+abhängt, zeigen R5 (Quellen ohne `ok` auf den ersten Befehl) und K4. Bei
+der Ausfallzeit (Punkt 2) zählen Sperren nicht mit.
 
 Der Bericht nennt je Grund und Variante, wie viele Quellen, Sitzungen und
 Aufrufe herausfallen.
@@ -517,12 +544,16 @@ deshalb spätestens 14 Tage nach T1, bei Verlängerung also bis T0 + 84 Tage.
    Exec-Shell Befehle über stdin (`ssh host sh < skript`), führt A sie Zeile
    für Zeile aus und loggt sie, B schickt nur `sh` ans Modell. Und was in A
    Eingabe für ein Programm ist, das stdin liest (`cat` ohne Datei), ist in B
-   ein eigener Befehl.
+   ein eigener Befehl. Für Gemini passt das Gateway die Nachrichten an
+   (E-045): Den Exec-Befehl bekommt das Modell als user-Nachricht wie in
+   einer interaktiven Sitzung, und eine leere Zeile beantwortet das Gateway
+   selbst leer.
 5. **Die Antwortzeit gehört zur Behandlung.** H2 kann Inhalt und
    Geschwindigkeit der Antworten nicht trennen. H3 beleuchtet nur den Teil
    „Abbruch vor der Antwort“.
-6. **Antworten von B schwanken.** Auch mit niedriger `temperature` kann
-   derselbe Befehl verschiedene Ausgaben bekommen. Das gehört zur Behandlung.
+6. **Antworten von B schwanken.** Mit `temperature` 1,0 (Abschnitt 4.5,
+   E-045) kann derselbe Befehl verschiedene Ausgaben bekommen. Das gehört zur
+   Behandlung.
 7. **Downloads.** Mit V5 laden beide Varianten wirklich, aber was der
    Angreifer danach sieht, kommt in B vom Modell. Ohne V5 holt B nie etwas ab,
    und das sehen Angreifer an ihren eigenen Servern.
@@ -554,7 +585,9 @@ deshalb spätestens 14 Tage nach T1, bei Verlängerung also bis T0 + 84 Tage.
   heißen nach Nummer oder Kampagnen-Präfix.
 - In B gehen die Befehle der Angreifer über das Gateway an den LLM-Anbieter,
   ohne die Adresse des Angreifers (`persona.md`, „Einbindung in Cowrie“). Der
-  Abschnitt Methodik auf `/lab` nennt das.
+  Abschnitt Methodik auf `/lab` nennt das. Anbieter ist Google (Gemini-API,
+  bezahlte Stufe): keine Nutzung zum Training, Speicherung für begrenzte Zeit
+  nur zur Missbrauchserkennung (E-045).
 - Die Auswertung läuft auf dem Hauptserver. Rohdaten und Berichte mit
   Angreifertext gehören nicht in den Kontext eines Coding-Agenten (CLAUDE.md,
   E-033).
@@ -563,6 +596,6 @@ deshalb spätestens 14 Tage nach T1, bei Verlängerung also bis T0 + 84 Tage.
 
 - `AGENTS.md`: Forschungsfrage und harte Regeln
 - `docs/decisions.md`: E-002, E-004, E-008, E-009, E-014, E-015, E-017, E-022,
-  E-024, E-025, E-030, E-039, E-040, E-041, E-042, E-043, E-044
+  E-024, E-025, E-030, E-039, E-040, E-041, E-042, E-043, E-044, E-045
 - `sensor/persona/persona.md`: Persona und bekannte Unterschiede
 - `docs/campaigns.md`: Kampagnen, Normalisierung und ihre Grenzen

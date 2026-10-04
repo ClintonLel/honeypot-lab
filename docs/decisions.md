@@ -60,8 +60,9 @@ bei der Übernahme ausformuliert.
 | E-040 | Vorab-Registrierung des Experiments in `docs/method.md`     | angenommen                                     |
 | E-041 | Patch für cowrie-b ist Voraussetzung für den Start          | angenommen, Ereignisfelder ersetzt durch E-044 |
 | E-042 | Mitschnitte von B erst nach dem Ende der Laufzeit öffentlich | angenommen                                     |
-| E-043 | LLM-Gateway: Grenzen, Herkunftsprüfung und Kosten           | angenommen, Grenzen ergänzt durch E-044        |
+| E-043 | LLM-Gateway: Grenzen, Herkunftsprüfung und Kosten           | angenommen, Grenzen ergänzt durch E-044, Anbieter und Kosten ersetzt durch E-045 |
 | E-044 | Patch für cowrie-b: Ereignis, Abgleich, EOF, Image          | angenommen                                     |
+| E-045 | LLM-Gateway: Gemini statt OpenAI                            | angenommen                                     |
 
 ---
 
@@ -1995,7 +1996,9 @@ Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
 
 ## E-043: LLM-Gateway: Grenzen, Herkunftsprüfung und Kosten
 
-- Status: angenommen, Gesamtgrenze und Kürzung der Antworten ergänzt durch E-044
+- Status: angenommen, Gesamtgrenze und Kürzung der Antworten ergänzt durch
+  E-044, Anbieter, Feld der Ausgabegrenze, Preise und Währung ersetzt durch
+  E-045
 - Datum: 2026-10-01
 - Quelle: Schritt 7.2, Plan von Claude Code, vom User mit Änderungen
   freigegeben. Grundlage: Quellcode von Cowrie 3.0.14
@@ -2286,3 +2289,233 @@ Eingabe erst danach. Die Regel steht in `method.md`, Abschnitt 9.7.
 - `cowrie-b.patch` eignet sich wie E-016 als Beitrag ans Cowrie-Projekt:
   Exec-Logging, Antwort-Ereignis, motd, Status 0 und EOF sind Lücken in
   Cowrie selbst.
+
+## E-045: LLM-Gateway: Gemini statt OpenAI
+
+- Status: angenommen
+- Datum: 2026-10-04
+- Quelle: Plan von Claude Code nach der Google-Doku (abgerufen 2026-10-04),
+  geprüft von Claude (Projekt), vom User mit Änderungen freigegeben: Modell
+  3.1 Flash-Lite, `temperature` 1,0, Kosten in US-Dollar, Exec am Befehl
+  teilen statt ihn zu wiederholen, Schalter für aufeinanderfolgende
+  user-Nachrichten, Merker für Weigerungen, Antworttext im Filtertest,
+  Cache-Quote und Hochrechnung in `llm_check`, Prüfung auf Euro-Zeilen in der
+  Migration. Ersetzt in E-043 den Anbieter, das Feld der Ausgabegrenze, die
+  Preise aus der `.env` und die Währung. Grenzen, Herkunftsprüfung,
+  Statuscodes zum Sensor, Budget- und Schätzlogik aus E-043 und E-044
+  bleiben.
+
+**Entscheidung:**
+
+1. **Anbieter** ist die Gemini-API über ihren OpenAI-kompatiblen Endpunkt
+   ([OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai),
+   Stand 2026-09-02). Die Adresse
+   `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`
+   steht fest in `server/app/llm_provider.py` und ist nicht konfigurierbar.
+   Der Key geht nur als `Authorization: Bearer`, nie als `?key=` in der URL.
+   OpenAI fällt ganz weg, mit ihm `LLM_BASE_URL` und `LLM_MAX_TOKENS_PARAM`;
+   gesendet wird `max_tokens`.
+2. **Abrechnung** über das Cloud-Guthaben aus Google AI Pro (10 $ im Monat,
+   [Google Developer Program](https://developers.google.com/profile/help/benefits):
+   „the credit can only be applied to Google GenAI models including Gemini
+   2.0+ models“), darüber Prepay
+   ([Billing](https://ai.google.dev/gemini-api/docs/billing)). Prepay ist
+   Pflicht: Cloud-Guthaben wird nur verbraucht, solange das Prepay-Guthaben
+   über 0 liegt (mindestens 5 $); bei 0 $ antworten alle Keys mit 402. Ein
+   eigenes Projekt nur fürs Lab mit aktivem Billing.
+3. **Bezahlte Stufe, kein Training.** Laut
+   [Gemini API Additional Terms](https://ai.google.dev/gemini-api/terms)
+   (Stand 2026-04-28) ist die API ein „Paid Service“, wenn sie über ein
+   Projekt mit aktivem Billing läuft. Dann: „Google doesn't use your prompts
+   (including associated system instructions, cached content, and files …)
+   or responses to improve our products“. Google loggt Prompts und Antworten
+   „for a limited period of time, solely for detecting and preventing
+   violations of the Prohibited Use Policy“. Für API-Clients im EWR sind ohnehin
+   nur Paid Services erlaubt.
+4. **Modell `gemini-3.1-flash-lite`**, gepinnt. `LLM_MODEL` muss in der
+   Allowlist in `server/app/llm_provider.py` stehen: nur feste Versionen,
+   kein `-latest`, kein `-preview` (wie Image-Tags). Abgekündigt, Abschaltung
+   laut [Deprecations](https://ai.google.dev/gemini-api/docs/deprecations)
+   frühestens 2027-05-07, also nach der Laufzeit samt Verlängerung und
+   Auswertung. Preise der Liste, Standard-Stufe, Text, US-Dollar je eine
+   Million Tokens, laut [Pricing](https://ai.google.dev/gemini-api/docs/pricing)
+   (Stand 2026-10-01, abgerufen 2026-10-04):
+
+   | Modell | Eingabe | Cache | Ausgabe inkl. Denk-Tokens | Denken mindestens |
+   |--------|---------|-------|---------------------------|-------------------|
+   | **gemini-3.1-flash-lite** | 0,25 | 0,025 | 1,50 | `minimal` |
+   | gemini-3.5-flash-lite | 0,30 | 0,03 | 2,50 | `minimal` |
+   | gemini-3.6-flash | 0,75, ab 2027-01-01 1,50 | 0,075 / 0,15 | 3,75 / 7,50 | `minimal` |
+   | gemini-3.8-flash | 0,75, ab 2027-01-01 1,50 | 0,075 / 0,15 | 3,75 / 7,50 | `low` |
+   | gemini-2.5-flash-lite | 0,10 | 0,01 | 0,40 | aus |
+
+   Speicherkosten fallen nur für explizites Caching an, das das Gateway nicht
+   nutzt; implizites Caching ist ab 2.5 an und kostet nichts extra.
+5. **Denkmodus `reasoning_effort=minimal`.** Gemini 3 denkt immer:
+   „Reasoning cannot be turned off for Gemini 2.5 Pro or 3 models.“ Die
+   Kompat-Schicht bildet `reasoning_effort` `minimal` bei 3.1 Flash-Lite auf
+   `thinking_level` `minimal` ab (Tabelle auf der OpenAI-Seite); das ist das
+   Minimum. Gesetzt wird das Top-Level-Feld, nicht `extra_body`
+   (`reasoning_effort` und `thinking_config` „can't be used at the same
+   time“). Denk-Tokens kosten wie Ausgabe und zählen gegen die Ausgabegrenze:
+   „If the model hits this limit while reasoning, it … returns truncated or
+   empty output (while still billing for any thinking tokens generated)“
+   ([Thinking](https://ai.google.dev/gemini-api/docs/thinking)).
+   `LLM_REASONING_EFFORT` muss zum Modell passen (`low` nur bei 3.8 Flash,
+   dort ist `minimal` ein Fehler).
+6. **`temperature` 1,0.** [Gemini 3](https://ai.google.dev/gemini-api/docs/gemini-3):
+   „we strongly recommend keeping the temperature parameter at its default
+   value of 1.0 … Changing the temperature (setting it below 1.0) may lead to
+   unexpected behavior, such as looping“. `method.md` 4.5 ist angepasst.
+7. **Nachrichten in Gemini-Form** (`to_gemini`). Gemini lehnt Anfragen ohne
+   user-Nachricht ab (400 „contents is not specified“,
+   [Forum 10/2025](https://discuss.ai.google.dev/t/gemini-openai-compatible-endpoint-langchain-return-error-400/106596))
+   und Nachrichten mit leerem Text
+   ([Bericht](https://github.com/microsoft/autogen/issues/5762)). Exec
+   schickt bei Cowrie nur die System-Nachricht, fast der ganze Verkehr ist
+   Exec. Deshalb:
+   - **Exec:** Das Gateway teilt die System-Nachricht an
+     `" The command to execute is: "`. An Gemini geht `system` = alles davor,
+     `user` = der Befehl. Der Befehl steht nur einmal.
+   - **Leerer Text** im Verlauf fällt weg. Ist die letzte Zeile leer oder
+     Exec ohne Befehl, antwortet das Gateway selbst leer, ohne Anbieter
+     (`llm_usage.status = local_empty`, 0 $, vor Budget und Minutengrenze).
+   - **Aufeinanderfolgende Nachrichten derselben Rolle** schickt das Gateway
+     so, wie sie entstehen (Cowrie hängt leere Antworten nicht an). Ob Gemini
+     sie annimmt, zeigt nur der echte Anbieter: Probe `verlauf`
+     (`server/README.md`). Lehnt er ab, fasst `LLM_MERGE_TURNS=true` sie mit
+     Zeilenumbruch zusammen.
+8. **Sperren.** Die einstellbaren Filter sind bei Gemini 2.5 und 3 aus: „If
+   the threshold is not set, the default block threshold is Off for Gemini
+   2.5 and 3 models“ ([Safety settings](https://ai.google.dev/gemini-api/docs/safety-settings)).
+   Lockern lässt sich über die Kompat-Schicht nichts: `safety_settings` ist
+   dort nur für Bilder dokumentiert, und für Chat sagt Google „the safety
+   setting feature is not implemented yet in OAI Compatibility“
+   ([Forum](https://discuss.ai.google.dev/t/safety-settings-not-working-when-using-openai-compatibility-extra-body/87137),
+   06/2025, 11/2025). Es bleiben nicht einstellbare Sperren (etwa
+   PROHIBITED_CONTENT, RECITATION, SPII). Wie eine Sperre über den
+   kompatiblen Endpunkt aussieht, ist nicht dokumentiert; das Gateway
+   erkennt drei Formen: HTTP 200 mit `finish_reason` `content_filter` oder
+   `content_filter: <GRUND>` (so mit gemini-3.7-flash
+   [berichtet](https://github.com/TBI-AI-Incubator/codify/issues/39)), ohne
+   Kandidat (`choices` leer) und mit Sperrgrund im Prompt-Feedback. Alle drei
+   gehen als **502** an den Sensor, mit demselben Rumpf wie `upstream_error`,
+   in `llm_usage` als **`upstream_blocked`**. Kosten wie gemeldet, ohne
+   `usage` die obere Schätzung. Die Logzeile nennt den Grund nur aus einer
+   festen Liste.
+9. **Weigerungen** kommen als normale Antwort an. Passt eine Antwort zu einer
+   festen Wendung aus `server/app/llm_refusal.py` („I'm sorry“, „As an AI“ …),
+   steht in `llm_usage.refusal` `true`, ohne Text. Die Antwort geht trotzdem
+   an Cowrie.
+10. **Grenzen des Anbieters:** 429 (Rate-Limit, Ausgabenlimit) und 402
+    (Prepay leer) sind `upstream_limited`, 502 an den Sensor, 0 $.
+11. **Kosten in US-Dollar.** `cost_micros` heißt Millionstel Dollar, Budgets
+    `LLM_BUDGET_MONTH_USD` und `LLM_BUDGET_DAY_USD`; die Preise kommen aus
+    der Tabelle oben (bei Flash je Tag der Anfrage). Wie die Kompat-Schicht
+    Denk-Tokens in `usage` meldet, ist nicht dokumentiert; abgerechnet wird
+    `max(completion_tokens, total_tokens − prompt_tokens)`, ohne
+    `total_tokens` `completion_tokens` plus
+    `completion_tokens_details.reasoning_tokens`. Neue Spalten
+    `llm_usage.reasoning_tokens` und `refusal` (Migration 0005). Die
+    Migration bricht ab, wenn `llm_usage` schon Kosten enthält: Das wären
+    Euro. Bis E-045 wurde kein Key eingetragen, es sollte keine geben.
+12. **Budgets** für 3.1 Flash-Lite mit 950 Aufrufen je Tag in B (Annahme von
+    Tom): schlechter Fall ohne Cache = 8.000 Eingabe-Tokens × 0,25 $ +
+    800 Ausgabe-Tokens × 1,50 $ je Million = 3,2 m$ je Aufruf, 3,04 $ je Tag,
+    92,40 $ im Monat. **Monat 100 $** (aufgerundet), **Tag 6,10 $** (zweimal
+    der schlechte Tag). Ausgabenlimit des Projekts bei Google knapp darüber
+    (110 $).
+13. **Prüfen nach dem Rollout:** Probeaufrufe `exec`, `interactive`,
+    `verlauf`, `leer` (`server/README.md`), auf dem Sensor
+    `check-cowrie-b.py --filtertest` (neun eigene, harmlose Befehle, nur
+    RFC 5737 und example.com; Antworten gekürzt, gesäubert, entschärft) und
+    `python -m app.llm_check` (Zahl je Status, Weigerungen, Cache-Quote,
+    Kosten hochgerechnet auf einen Monat).
+
+**Modellvergleich** (Grundlage der Wahl; 950 Aufrufe je Tag, rund 8.000
+Eingabe-Tokens je Aufruf aus der Persona mit 29.641 Zeichen, typisch 150
+Ausgabe- und 100 Denk-Tokens, schlecht 300 und 500; Dollar je Monat):
+
+| Modell | ohne Cache | 70 % Cache | 90 % Cache | schlecht, ohne Cache |
+|--------|-----------:|-----------:|-----------:|---------------------:|
+| gemini-3.5-flash-lite | 87 | 44 | 31 | 127 |
+| **gemini-3.1-flash-lite** | 69 | 32 | 22 | 92 |
+| gemini-3.6-/3.8-flash bis 2026-12-31 | 200 | 91 | 60 | 260 |
+| gemini-3.6-/3.8-flash ab 2027-01-01 | 401 | 182 | 120 | 520 |
+| gemini-2.5-flash-lite | 26 | 11 | 7 | 32 |
+
+Zur Latenz nennt Google keine Zahlen; Flash-Lite ist als „low-latency“
+ausgewiesen. Gemessen wird sie nach dem Rollout (Filtertest, K2).
+
+**Begründung:**
+
+- OpenAI entfernen statt behalten: Niemand nutzt ihn. Ein zweiter Anbieter
+  hieße frei wählbare Basis-URL, zwei Preis- und Feldmodelle, zwei
+  Fehlerbilder und doppelte Tests. Einen Wechsel während der Laufzeit schließt
+  `method.md` 4.5 ohnehin aus.
+- Feste Adresse statt Variable: Der Key kann nur an Google gehen, auch wenn
+  jemand die `.env` ändert oder ein Tippfehler darin steht.
+- Preise im Code statt in der `.env`: Sie hängen am gepinnten Modell, haben
+  eine Quelle und ein Datum und können nicht falsch eingetragen werden.
+  Ändert Google sie, ist das ein Ereignis für den Start-Eintrag.
+- USD: Preise, Cloud-Guthaben und Ausgabenlimit sind in Dollar. Ein Kurs im
+  Code wäre geraten.
+- 3.1 Flash-Lite: das günstigste 3er-Modell, rund 10 $ im Monat unter 3.5
+  Flash-Lite. Die Abkündigung greift frühestens nach der Laufzeit. Flash
+  kostet das Dreifache und verdoppelt sich mitten in der Laufzeit. 2.5
+  Flash-Lite wäre günstiger, aber laut Models-Seite nur für Konten, die es
+  früher genutzt haben. 10 $ im Monat reichen mit keinem 3er-Modell.
+- Exec teilen statt den Befehl zu wiederholen: Dann ist der System-Prompt in
+  jeder Anfrage gleich, auch zwischen Exec und interaktiv, und als Ganzes ein
+  fester Anfang für den Cache; der Befehl steht nur einmal. Ein fester Text
+  als user-Nachricht ginge nicht, die Persona sagt „Every user message is a
+  command line“. Geprüft: `LLM_PROMPT_SHA256` ist der SHA-256 des
+  Persona-Teils **vor** Cowries Guidance-Satz, gebildet auf Cowries Form,
+  bevor das Gateway umbaut; die Teilung liegt dahinter. Hash und gepinnter
+  Wert bleiben. Der Paritätstest A/B (`sensor/cowrie-b/tests/e2e.py`) und das
+  Prüfskript vergleichen, was der SSH-Client sieht, und `input_sha256` des
+  rohen Befehls im Log von Cowrie; beides entsteht auf dem Sensor vor dem
+  Gateway, dort mit einer Attrappe, die Cowries Form liest. Unberührt.
+- Leere Zeilen lokal: Eine echte Shell gibt dort nichts aus, und das Modell
+  antwortete laut `persona.md` meist leer. Ohne das wäre jede leere Zeile ein
+  502 und damit ein Ausfall.
+- Sperren als eigener Status: Auf dem Sensor sind sie nicht von Fehlern zu
+  trennen (502, `upstream_error`), in `llm_usage` schon. Nur so lässt sich
+  zählen, ob Gemini sperrt, und `method.md` 8 kann sie bei der Ausfallzeit
+  abziehen.
+- Merker statt Text für Weigerungen: Antworten des Modells gehören nicht in
+  die Datenbank (E-042, `method.md` 9.7); der Merker zählt, die Antworten
+  zeigt nur der Filtertest auf eigene Befehle.
+- Migration mit Prüfung statt eines Hinweises: Sie belegt die Annahme, dass
+  es keine Euro-Zeilen gibt, statt sie zu behaupten.
+
+**Konsequenzen:**
+
+- Server, Migration 0005 und `.env` gehen vor dem Start von B live. Der
+  Sensor bleibt unverändert, cowrie-b wird nicht neu gebaut; der Filtertest
+  hängt seinen Wrapper zur Laufzeit ein.
+- Für den Start-Eintrag (`method.md` 4.5) kommen dazu: Anbieter Google
+  (Gemini-API, bezahlte Stufe), Modell-ID, `reasoning_effort`,
+  `temperature`, `LLM_MERGE_TURNS` nach der Probe `verlauf`, Stand der
+  Preistabelle.
+- Offen bis zum Rollout, weil nur am echten Anbieter zu sehen: ob Gemini
+  zwei user-Nachrichten in Folge und Verläufe ohne Gemini-Signatur annimmt
+  (Probe `verlauf`), ob und wo `usage` Cache- und Denk-Tokens meldet (sonst
+  bucht das Gateway zu viel, nie zu wenig), wie eine Sperre wirklich aussieht
+  (Filtertest, `llm_check`), wie lang die Antworten dauern.
+- Risiko für H2 (`method.md` 8): Sperren und Weigerungen treffen eher
+  Downloader, Persistenz und Miner. Bots, die auf deren Ausgabe reagieren,
+  schicken in B dann mechanisch seltener Folgebefehle; Δ verschiebt sich
+  gegen Gleichwertigkeit. Die größte Familie (SSH-Key anhängen) gibt in einer
+  echten Shell ohnehin nichts aus. Bei Sperrquoten unter 1 % bleibt der
+  Effekt weit unter 5 pp. Größer wäre der Schaden, wenn gehäufte Sperren ein
+  Fenster zur Ausfallzeit machten und genau diese Quellen ausschlössen;
+  deshalb zieht `method.md` 8 sie ab. Sperrt Gemini im Filtertest typische
+  Befehle, entscheidet Tom vor dem Start.
+- Google loggt die Befehle der Angreifer eine begrenzte Zeit zur
+  Missbrauchserkennung. Dass ein Projekt voller Malware-Befehle dort auffällt
+  und gesperrt wird, ist nicht auszuschließen; das wäre ein Abbruch aus
+  Betriebsgründen (`method.md` 9.7). `method.md` 12 nennt Google als
+  Empfänger.
+- Die Zahlen des Lasttests in E-043 stammen aus der Zeit mit Preisen aus der
+  `.env`; der Test selbst läuft mit den neuen Preisen weiter.
